@@ -1,0 +1,657 @@
+#! /usr/bin/env python3
+
+
+"""
+Desc: Command line tool for accessing and evaluating usage stats for Slurm jobs
+
+Authors:
+    - Chance Nelson <chance-nelson@nau.edu>
+"""
+
+
+import subprocess    # Running sacct
+import sys           # argv
+import string        # Clearing out ascii characters from parsed values
+import re            # Splitting parsed strings on multiple delimiters
+import shutil        # Get the terminal size
+import configparser  # Read args from config file
+import statistics    # Calculating median
+import shlex         # Ensure strings sent to bash are properly escaped
+
+
+class Colors:
+    GREEN   = '\033[92m'
+    CYAN    = '\033[36m'
+    YELLOW  = '\033[93m'
+    ORANGE  = '\033[208m'
+    RED     = '\033[91m'
+    END     = '\033[0m'
+
+
+def getJobStats(extraArgs=None):
+    """
+    Desc: Get the parsed output of 'jobstats'=
+          ('sacct --units=M -o jobid,jobname,reqmem,maxrss,reqcpus,usercpu,
+            timelimit,elapsed,state').
+
+    Args:
+        extraArgs ([str, ...]) (optional): Extra args to pass to the jobstats
+                                           command (ex. -u)
+
+    Returns:
+        List of lists of the form [[jobID, jobName, reqMem, maxRSS, reqCPU,
+                                    cpuTime, elapsed, elapsed], ...].
+    """
+    formatString = ' jobid,jobname,reqmem,maxrss,reqcpus,usercpu,timelimit'
+    formatString += ',elapsed,state'
+
+    if '-A' in extraArgs and '-u' not in extraArgs:
+        formatString += ',user'
+        if '-a' not in extraArgs:
+            extraArgs += ' -a '
+
+    cmd = 'sacct --units=M -P -o' + formatString
+   
+    # Sanitize the args passed in by the user
+    for arg in extraArgs.split(' '):
+        if arg == '':
+            continue
+
+        cmd += ' ' + shlex.quote(arg)
+
+    # --units=G : Get values in Gigabytes
+    # -P        : Make output parseable
+    out = subprocess.getstatusoutput(cmd)
+
+    # Get return of jobstats command.
+    out = out[1].split('\n')
+
+    jobs = []
+    for row in out:
+        row = row.split('|')
+        row = ['-' if x == '' else x for x in row]
+        jobs.append(row)
+
+    return jobs
+
+
+def getRunningJobStats(jobID):
+    """
+    Desc: Get the stats for a currently running job
+
+    Args:
+        jobID (string): ID fo the job to look up
+
+    Returns:
+        List [AveCPU, MaxRSS]
+    """
+    out = subprocess.getstatusoutput('sstat -P --format=avecpu,maxrss -j ' +
+                                     str(jobID))
+
+    out = out[1].split('\n')
+    
+    if len(out) < 2:
+        return None
+    
+    out = out[1].split('|')
+   
+    if len(out) != 2:
+        return None
+   
+    # maxRSS from sstat is in K, convert to G
+    if out[1][-1] == 'K':
+        out[1] = str(int(out[1][:-1]) / pow(2, 10)) + 'M'
+   
+    return out
+
+
+def timeStringToSeconds(timeString):
+    """
+    Desc: Convert a time string to seconds total elapsed.
+
+    Args:
+        timeString (string): Timestamp of the form 'D-HH:MM:SS.SSS'
+
+    Returns:
+        Integer or floating point representation of seconds elapsed.
+    """
+    rightDecimal = 0
+    timeInSeconds = 0
+    timeIndex = 0
+
+    timeParsed = timeString.split('.')
+
+    if len(timeParsed) > 1:
+        timeInSeconds += float('0.' + timeParsed[1])
+
+    timeParsed = timeParsed[0]
+    
+    timeParsed = re.split('-|:', timeParsed)
+
+    # Does elapsed contain days? (*1-*00:00:00)
+    if len(timeParsed) == 4:
+        timeInSeconds += int(timeParsed[0]) * 24 * 60 * 60
+
+    # Does time contain hours?
+    if len(timeParsed) >= 3:
+        timeInSeconds += int(timeParsed[-3]) * 60 * 60  # Hours
+
+    # Does time contain minutes?
+    if len(timeParsed) >= 2:
+        timeInSeconds += int(timeParsed[-2]) * 60       # Minutes
+    
+    # Does time contain seconds?
+    if len(timeParsed) >= 1:
+        timeInSeconds += int(timeParsed[-1])            # Seconds
+
+    return timeInSeconds
+      
+
+def main():
+    # Read in config args
+    config = configparser.ConfigParser()
+    config.read('jobstats-config.ini')
+    SHOW_JOB_CHILDREN  = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True' 
+    MEMORY_WEIGHT      = int(config['DEFAULTS']['MEMORY_WEIGHT'])
+    CPU_WEIGHT         = int(config['DEFAULTS']['CPU_WEIGHT'])
+    COLUMN_MAX         = config['DEFAULTS']['COLUMN_MAX']
+    
+    GRADE_SCALE_TLIMIT = [float(x) for x in config['DEFAULTS']
+                         ['GRADE_INCREMENT_TLIMIT'].split(',')]
+    
+    GRADE_SCALE_MEMORY = [float(x) for x in config['DEFAULTS']
+                         ['GRADE_INCREMENT_RAM'].split(',')]
+    
+    GRADE_SCALE_CPU    = [float(x) for x in config['DEFAULTS']
+                         ['GRADE_INCREMENT_CPU'].split(',')]   
+    
+    # Args controlled by flags
+    OVERRIDE_COLUMN_SIZE = False
+    IGNORE_COLUMN_SIZE   = False
+    SHOW_RUNNING_JOBS    = False
+    PARSEABLE            = False
+    NO_COLOR             = False
+
+    # Process flags and args
+    if '--col-size' in sys.argv:
+        OVERRIDE_COLUMN_SIZE = True
+        try:
+            COLUMN_MAX = sys.argv[sys.argv.index('--col-size') + 1]
+            sys.argv.remove('--col-size')
+            sys.argv.remove(COLUMN_MAX)
+            COLUMN_MAX = int(COLUMN_MAX)
+
+        except:
+            err = True
+
+    if '--no-size-limit' in sys.argv or '-s' in sys.argv:
+        IGNORE_COLUMN_SIZE = True
+        try:
+            sys.argv.remove('--no-size-limit')
+
+        except:
+            sys.argv.remove('-s')
+
+    if '--no-color' in sys.argv or '-c' in sys.argv:
+        NO_COLOR = True
+        try:
+            sys.argv.remove('--no-color')
+
+        except:
+            sys.argv.remove('-c')
+
+    if '--parsable' in sys.argv or '-p' in sys.argv:
+        PARSEABLE = True
+        try:
+            sys.argv.remove('--parsable')
+
+        except:
+            sys.argv.remove('-p')
+
+    if '--show-running' in sys.argv or '-r' in sys.argv:
+        SHOW_RUNNING_JOBS = True
+        try:
+            sys.argv.remove('--show-running')
+
+        except:
+            sys.argv.remove('-r')
+
+    if COLUMN_MAX == 'auto':
+        COLUMN_MAX = shutil.get_terminal_size((80, 80))[0]
+    
+    else:
+        COLUMN_MAX = int(COLUMN_MAX)
+
+    if IGNORE_COLUMN_SIZE:
+        COLUMN_MAX = sys.maxsize
+
+    jobs = getJobStats(extraArgs=' '.join(sys.argv[1::]))
+
+    err = False
+    # Make sure the sacct call didn't throw an error
+    if jobs[0][0] == '-' or len(jobs[0]) == 1:
+        if PARSEABLE:
+            exit()
+
+        print("Sacct error: ", jobs[0][0])
+        err = True
+
+    # Print help message
+    if '-h' in sys.argv or '--help' in sys.argv or err:
+        print('Usage: ', sys.argv[0].split('/')[-1], ' [OPTION]...')
+        print('Show usage statistics for past slurm jobs')
+        print('\n  -A                   run jobstats on an entire account')
+        print('  -S                   show jobs since start date (format m/d/yy)')
+        print('  -r, --show-running   show running jobs')
+        print('  -p, --parsable       make output parseable')
+        print('  -c, --no-color       do not print colored stats')
+        print('  -s, --no-size-limit  ignore dynamic terminal size limits')
+        print('  All other arguments in \'sacct\' are accepted')
+        print('\nGot bugs? Report to hpcsupport@nau.edu')
+        exit()
+
+    # Add in label value for single job efficiency
+    jobs[0].append('JobEff')
+
+    # Generate length limits for each column
+    maxLen = [0 for i in range(len(jobs[0]))]
+    for i in jobs:
+        for index, jobString in enumerate(i):
+            if len(jobString) > maxLen[index] and '.b' not in jobString \
+                                              and ' ' not in jobString:
+                maxLen[index] = len(jobString)
+
+    # Force the MaxLen column to fit max 7 characters instead of 6
+    maxLen[2] = 7
+
+    # Reduce longest column by 1 until we fit the max width
+    while sum(maxLen) + len(maxLen) * 3 + 2 > COLUMN_MAX:
+        maxLen[maxLen.index(max(maxLen))] -= 1
+
+    # Construct the label string
+    labels = jobs[0]
+    labelString = ''    
+
+    for index, i in enumerate(labels):
+        if PARSEABLE:
+            labelString += i
+       
+        elif len(i) > maxLen[index]:
+            labelString += i[:maxLen[index]-1] + '+'
+            spaceLeft = 0
+        
+        else:
+            labelString += i
+            spaceLeft = maxLen[index] - len(i)
+
+        if PARSEABLE:
+            if i != labels[-1]:
+                labelString += '|'
+        
+        else:    
+            if i != labels[-1]:
+                labelString += ' ' * spaceLeft + '   '
+            
+            else:
+                labelString += ' ' * spaceLeft + '  '
+    
+    print(labelString)
+    
+    if not PARSEABLE:
+        print('=' * (len(labelString)))
+
+    # Truncate the jobs list to remove the labels
+    jobs = jobs[1::] 
+    
+    # Get the calculatable label positions
+    calcRAM    = labels.index('ReqMem') 
+    calcCPU    = labels.index('ReqCPUS')
+    calcTLimit = labels.index('Timelimit')
+
+    # Store [usage, allocated]
+    memoryStats = [0, 0]
+    cpuStats    = [0, 0]
+    tLimitStats = [0, 0]
+
+    # Prune cancelled and pending jobs
+    jobs = [i for i in jobs if 'CANCELLED' not in i[8] 
+                            and 'PENDING' not in i[8]]
+
+    for index, i in enumerate(jobs):
+        # Check if this is a .batch or parent job. Don't display those
+        try:
+            if '.' in i[0] and not SHOW_JOB_CHILDREN:
+                continue
+            elif '.batch' in jobs[index+1][0]:
+                i[3] = jobs[index+1][3]
+        
+        # In the case that we hit the last row, just keep going, it can't 
+        # be a batch job
+        except IndexError:
+            None
+
+        # Skip running jobs unless the flag is set
+        if i[8] == 'RUNNING' and not SHOW_RUNNING_JOBS:
+            continue
+        
+        # Get the largest MaxRSS and reqCPU value for a batch job's child from 
+        # it's children
+        if not SHOW_JOB_CHILDREN and index + 1 < len(jobs) \
+                                 and '.' in jobs[index+1][0] \
+                                 and '.' not in jobs[index]:
+            current   = index + 1
+            maxRSS    = i[3]
+            maxReqCPU = i[4]
+            
+            while current < len(jobs) and '.' in jobs[current][0]:
+                # Get MaxRSS
+                currentRSS    = jobs[current][3]
+                currentReqCPU = jobs[current][4]
+
+                if currentRSS == '-':
+                    if int(maxReqCPU) < int(currentReqCPU):
+                        maxReqCPU = currentReqCPU
+
+                    current += 1
+                    continue
+
+                maxRSSSanitized = maxRSS
+
+                # clean RSS values of ascii characters
+                for letter in string.ascii_letters:
+                    currentRSS      = currentRSS.replace(letter, '')
+                    maxRSSSanitized = maxRSSSanitized.replace(letter, '')
+
+                if maxRSSSanitized != '-' and \
+                   float(currentRSS) > float(maxRSSSanitized):
+                    maxRSS = jobs[current][3]
+
+                if int(maxReqCPU) < int(currentReqCPU):
+                    maxReqCPU = currentReqCPU
+
+                current += 1
+
+            i[4] = maxReqCPU
+            i[3] = maxRSS
+        
+        # If the job is completed, and we weren't able to get memory usage,
+        # default to zero
+        if i[8] in ['COMPLETED', 'FAILED'] and i[3] == '-':
+            i[3] = '0'
+
+        if i[8] == 'RUNNING':
+            runningStats = getRunningJobStats(i[0])
+
+            # If running stats from sstat can't be obtained, still display
+            # the job
+            if not runningStats:
+                runningStats = ['-', '-']
+
+            i[3] = runningStats[1]
+            i[5] = runningStats[0]
+
+        # Build each job string and print 
+        jobEfficiency = [None, None, None]  # Mem, cpu, time
+        jobString = ''
+
+        for valIndex, valString in enumerate(i):
+            # Attempt to assess quality of the current value
+            rating = ''
+
+            jobID     = i[0]
+            reqMem    = i[2]
+            maxRSS    = i[3]
+            reqCPUs   = i[4]
+            userCPU   = i[5]
+            timeLimit = i[6]
+            elapsed   = i[7]
+            state     = i[8]
+            
+            usageByCore = False
+            if 'c' in reqMem:
+                usageByCore = True
+
+            for letter in string.ascii_letters:
+                reqMem = reqMem.replace(letter, '')
+                maxRSS = maxRSS.replace(letter, '') 
+
+            if usageByCore:
+                reqMem = float(reqMem) * float(reqCPUs)
+                i[2] = str(reqMem) + 'G'
+            
+            else:
+                reqMem = float(reqMem)
+                i[2] = str(reqMem) + 'G'
+
+            # Don't count incomplete jobs towards the overall grade
+            if 'CANCELLED' in state or state in ['OUT_OF_MEMORY', 'FAILED', 
+                                                 'TIMEOUT']:
+                None
+
+            # Is the column about RAM? Assess maxRSS to reqMem
+            elif valIndex == calcRAM and '-' not in [maxRSS, reqCPUs, valString]:
+                # Is memory usage by core?
+                try:
+                    maxRSS = float(maxRSS)
+
+                except:
+                    maxRSS = 0
+
+                if reqMem != 0:
+                    usage = (maxRSS / reqMem * MEMORY_WEIGHT)
+                    jobEfficiency[0] = usage
+
+                if not NO_COLOR:
+                    if usage < GRADE_SCALE_MEMORY[0]:
+                        rating = Colors.RED
+                    
+                    elif usage < GRADE_SCALE_MEMORY[1]:
+                        rating = Colors.YELLOW
+                    
+                    else:
+                        rating = Colors.GREEN
+
+                memoryStats[0] += maxRSS
+                memoryStats[1] += reqMem
+                    
+            # Is the column about CPU? Assess CPU time to requested CPUs
+            elif valIndex == calcCPU and '-' not in [elapsed, userCPU, reqCPUs]:
+                elapsed = timeStringToSeconds(elapsed)
+                userCPU = timeStringToSeconds(userCPU)
+
+                # 1 CPU is the minimum in slurm, if they reserve 1, dont grade
+                # but show they are doing a good job. 
+                if int(reqCPUs) == 1:
+                    if not NO_COLOR:
+                        rating = Colors.GREEN
+
+                else:
+                    try:
+                        usage = elapsed * int(reqCPUs)
+                        usage = userCPU / usage
+                    
+                    except:
+                        usage = 0
+
+                    jobEfficiency[1] = usage
+
+                    if not NO_COLOR:
+                        if usage < GRADE_SCALE_CPU[0]:
+                            rating = Colors.RED
+                    
+                        elif usage < GRADE_SCALE_CPU[1]:
+                            rating = Colors.YELLOW
+                    
+                        else:
+                            rating = Colors.GREEN
+
+                    cpuStats[0] += userCPU
+                    cpuStats[1] += elapsed * int(reqCPUs)
+
+            # Is the column about time? Assess elapsed time to set time limit
+            elif valIndex == calcTLimit and '-' not in [timeLimit, elapsed]:
+                elapsed   = timeStringToSeconds(elapsed)
+                timeLimit = timeStringToSeconds(timeLimit)
+
+                # 1 minute is the minimum for time limits in slurm. Dont grade
+                # these, but show they are doing a good job still
+                if timeLimit == 60:
+                    rating = Colors.GREEN
+
+                else:
+                    if elapsed > timeLimit:
+                        elapsed = timeLimit
+
+                    try:
+                        usage = elapsed / timeLimit
+                    except:
+                        usage = 0
+                    
+                    jobEfficiency[2] = usage
+
+                    if not NO_COLOR:
+                        if usage < GRADE_SCALE_TLIMIT[0]:
+                            rating = Colors.RED
+                        
+                        elif usage < GRADE_SCALE_TLIMIT[1]:
+                            rating = Colors.YELLOW
+                        
+                        else:
+                            rating = Colors.GREEN
+
+                    tLimitStats[0] += elapsed
+                    tLimitStats[1] += timeLimit
+     
+            # Finish building the string for the job row
+            # If the column value length > max length for column, truncate it
+            if not PARSEABLE:
+                if valIndex in [2, 3] and valString != '-':
+                    if 'M' in valString or 'G' in valString:
+                        valString = valString[:-1]
+
+                    valInGigs = float(valString) / (pow(2,10))
+                    valString = str("{0:0.2f}".format(valInGigs))
+                    valString = valString[:4] + 'G'
+
+                if NO_COLOR:
+                    rating = ''
+
+                if len(valString) > maxLen[valIndex]:
+                    jobString += rating + valString[:maxLen[valIndex]-1] + '+'
+                    spaceLeft = 0
+            
+                else:
+                    jobString += rating + valString 
+                    spaceLeft = maxLen[valIndex] - len(valString)
+
+                if not NO_COLOR:
+                    jobString += Colors.END
+
+
+                jobString += ' ' * spaceLeft + '   '
+                
+            else:
+                jobString += valString
+
+                if valString != i[-1]:
+                    jobString += '|'
+
+        # Nothing to print? Skip the row
+        if jobString == '':
+            continue
+    
+        else:
+            # Add in the jobEff column
+            usages = [i for i in jobEfficiency if i]
+            if len(usages) > 0:
+                usages = str(round(statistics.mean(usages) * 100, 2))
+            
+            else:
+                usages = '-'
+            
+            if not PARSEABLE:
+                if len(valString) > maxLen[valIndex]:
+                    jobString += usages[:maxLen[valIndex]-1] + '+'
+                    spaceLeft = 0
+            
+                else:
+                    jobString += usages
+                    spaceLeft = maxLen[valIndex] - len(valString)
+            
+                jobString += ' ' * spaceLeft + '   '            
+
+            else:
+                jobString += '|' + usages
+
+            print(jobString)
+
+    # Begin Handling the end stats and tips
+    if not PARSEABLE:
+        print('=' * (len(labelString)) + '\n')
+
+    # Print job stats grades
+    grades = []
+    showTips = [False, False, False]
+
+    if memoryStats[1] == 0:
+        gradeMemory = '-'
+    
+    else:
+        gradeMemory = round(memoryStats[0] / memoryStats[1] * 100, 2)
+        grades.append(gradeMemory)
+        gradeMemory = str("%.2f" % gradeMemory).zfill(5) + '%'
+
+    if cpuStats[1] == 0:
+        gradeCPU = '-'
+    
+    else:
+        gradeCPU = round(cpuStats[0] / cpuStats[1] * 100, 2)
+        grades.append(gradeCPU)
+        gradeCPU = str("%.2f" % gradeCPU).zfill(5) + '%'
+ 
+    if tLimitStats[1] == 0:
+        gradeTLimit = '-'
+    
+    else:
+        gradeTLimit = round(tLimitStats[0] / tLimitStats[1] * 100, 2)
+        grades.append(gradeTLimit)
+        gradeTLimit = str("%.2f" % gradeTLimit).zfill(5) + '%'
+
+
+    if PARSEABLE:
+        stats = 'STATS'
+        stats += '|' + gradeMemory 
+        stats += '|' + gradeCPU   
+        stats += '|' + gradeTLimit 
+        
+        try:
+            stats += '|' + str(round(statistics.mean(grades), 2))
+        
+        except:
+            stats += '|-'
+        
+        print(stats)
+    
+    else:
+        statsMemLine    = 'Requested Memory: ' + gradeMemory
+        statsCPULine    = 'Requested Cores : ' + gradeCPU
+        statsTLimitLine = 'Time Limit      : ' + gradeTLimit      
+        
+        print(statsMemLine)
+        print(statsCPULine)
+        print(statsTLimitLine)
+        
+        score = 'Efficiency Score: '
+        
+        try:
+            score += str(round(statistics.mean(grades), 2))
+        
+        except:
+            score += '-'
+
+        print('=' * len(score))
+        print(score)
+        print('=' * len(score))
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,644 @@
+#! /usr/bin/env python3
+
+
+import shlex       # Sanitize strings sent to bash
+import subprocess  # Pushing bash commands
+import sys         # argv
+import string      # Clearing jobstats entries of M's, G's, etc
+import pprint
+import re
+import shutil      # Get terminal width
+import statistics
+
+
+class Colors:
+    GREEN   = '\033[92m'
+    YAN    = '\033[36m'
+    YELLOW  = '\033[93m'
+    ORANGE  = '\033[208m'
+    RED     = '\033[91m'
+    END     = '\033[0m'
+
+
+def getSlurmAccountUsers(acc):
+    """
+    Desc: Get a list of slurm users who belong to a given account.
+
+    Args:
+        acc (string): name of slurm account to search
+
+    Returns:
+        List of account user names. None of account doesn't exist/no users
+        belong to it.
+    """
+    out = subprocess.getstatusoutput('sshare -a -P')[1].split('\n')
+    users = []
+
+    for i in out:
+        users.append(i.split('|'))
+        
+    users = [i for i in users if acc in i[0]]
+
+    users = [i[1] for i in users if not i[1] == 'parent' and not i[1] == '']
+
+    return users
+
+
+def getSlurmAccounts():
+    out = subprocess.getstatusoutput('sshare -l -P')[1].split('\n')[1::]
+    accounts = []
+
+    for i in out:
+        accounts.append(i.split('|'))
+        
+    accountNames = []
+    for i in accounts :
+        if i[0].strip() not in accountNames:
+            accountNames.append(i[0].strip())
+
+    return accountNames
+
+
+def getJobStats(account, fromDate=None, toDate=None):
+    """
+    Desc: Get the parsed output of 'jobstats'=
+          ('sacct --units=M -o jobid,jobname,reqmem,maxrss,reqcpus,usercpu,
+            timelimit,elapsed,state').
+
+    Args:
+        account (string): Name of slurm account
+        fromDate (string) (optional): Add a start date
+        toDate (string) (optional): Add an end date
+
+    Returns:
+        List of lists of the form [[jobID, reqMem, MaxRSS, ReqCPU, UserCPU, 
+                                    TimeLimit, elapsed, state, user], ...].
+    """
+    formatString = 'jobid,reqmem,maxrss,reqcpus,usercpu,timelimit'
+    formatString += ',elapsed,state,user'
+
+    cmd = 'sacct --units=G -P -A '
+    cmd += shlex.quote(account)
+    cmd +=' -a -o ' + formatString
+  
+    if fromDate:
+        cmd += ' -S ' + shlex.quote(fromDate)
+
+    if toDate:
+        cmd += ' -E ' + shlex.quote(toDate)
+
+    out = subprocess.getstatusoutput(cmd)
+
+    # Get return of jobstats command.
+    out = out[1].split('\n')
+
+    jobs = [] 
+    for row in out:
+        row = row.split('|')
+        row = ['-' if x == '' else x for x in row]
+        jobs.append(row)
+
+    return jobs
+
+
+def timeStringToSeconds(timeString):
+    """
+    Desc: Convert a time string to seconds total elapsed.
+
+    Args:
+        timeString (string): Timestamp of the form 'D-HH:MM:SS.SSS'
+
+    Returns:
+        Integer or floating point representation of seconds elapsed.
+    """
+    rightDecimal = 0
+    timeInSeconds = 0
+    timeIndex = 0
+
+    timeParsed = timeString.split('.')
+
+    if len(timeParsed) > 1:
+        timeInSeconds += float('0.' + timeParsed[1])
+
+    timeParsed = timeParsed[0]
+    
+    timeParsed = re.split('-|:', timeParsed)
+
+    # Does elapsed contain days? (*1-*00:00:00)
+    if len(timeParsed) == 4:
+        timeInSeconds += int(timeParsed[0]) * 24 * 60 * 60
+
+    # Does time contain hours?
+    if len(timeParsed) >= 3:
+        timeInSeconds += int(timeParsed[-3]) * 60 * 60  # Hours
+
+    # Does time contain minutes?
+    if len(timeParsed) >= 2:
+        timeInSeconds += int(timeParsed[-2]) * 60       # Minutes
+    
+    # Does time contain seconds?
+    if len(timeParsed) >= 1:
+        timeInSeconds += int(timeParsed[-1])            # Seconds
+
+    return timeInSeconds
+
+
+def getUserJobStats(jobs):
+    """
+    Desc: Get the job stats for a given user.
+
+    Args:
+        jobs (list): List of the form [jobid,reqmem, maxrss, reqcpus, usercpu,
+                                       timelimit, elapsed, state, user].
+
+    Returns:
+        List of the form [[gradeMemory, gradeCPU, gradeTLimit], memoryStats, 
+                          cpuStats, tLimitStats].
+    """
+    # Store [usage, allocated]
+    memoryStats = [0, 0]
+    cpuStats    = [0, 0]
+    tLimitStats = [0, 0]
+
+    # Prune jobs that useful information can't be parsed from
+    jobs = [i for i in jobs if i[7] not in ['RUNNING', 'PENDING', 'TIMEOUT', 
+                                            'OUT_OF_MEMOrY', 'FAILED'] 
+                            and 'CANCELLED' not in i[7]]
+
+    # In the case of a jobless user, abort
+    if len(jobs) < 1:
+        return None
+
+    for index, i in enumerate(jobs): 
+        # Check if this is a .batch or parent job. Don't display those
+        try:
+            if '.' in i[0]:
+                continue
+            elif '.batch' in jobs[index+1][0]:
+                i[2] = jobs[index+1][2]
+        
+        # In the case that we hit the last row, just keep going, it can't be a
+        # batch job
+        except IndexError:
+            None
+        
+        # Get the largest MaxRSS and reqCPU value for a batch job's child from 
+        # it's children
+        if index + 1 < len(jobs) and '.' in jobs[index+1][0] \
+                                 and '.' not in jobs[index][0]:
+            maxRSS    = i[2]
+            maxReqCPU = i[3]
+            
+            current = index + 1
+
+            while current < len(jobs) and '.' in jobs[current][0]:
+                # Get MaxRSS
+                currentRSS    = jobs[current][2]
+                currentReqCPU = jobs[current][3]
+
+                if currentRSS == '-':
+                    if int(maxReqCPU) < int(currentReqCPU):
+                        maxReqCPU = currentReqCPU
+
+                    current += 1
+                    continue
+
+                maxRSSSanitized = maxRSS
+
+                # clean RSS values of ascii characters
+                for letter in string.ascii_letters:
+                    currentRSS      = currentRSS.replace(letter, '')
+                    maxRSSSanitized = maxRSSSanitized.replace(letter, '')
+
+                if maxRSSSanitized != '-' and \
+                   float(currentRSS) > float(maxRSSSanitized):
+                    maxRSS = jobs[current][2]
+
+                if int(maxReqCPU) < int(currentReqCPU):
+                    maxReqCPU = currentReqCPU
+
+                current += 1
+
+            i[3] = maxReqCPU
+            i[2] = maxRSS 
+
+        reqMem    = i[1]
+        maxRSS    = i[2]
+        reqCPUs   = i[3]
+        userCPU   = i[4]
+        timeLimit = i[5]
+        elapsed   = i[6]
+        state     = i[7]
+
+        # Handle memory usage
+        usageByCore = False
+        if 'c' in reqMem:
+            usageByCore = True
+
+        for letter in string.ascii_letters:
+            reqMem = reqMem.replace(letter, '')
+            maxRSS = maxRSS.replace(letter, '') 
+
+        if usageByCore:
+            reqMem = float(reqMem) * float(reqCPUs)
+            i[1] = str(reqMem) + 'G'
+        
+        else:
+            reqMem = float(reqMem)
+            i[1] = str(reqMem) + 'G'
+
+        try:
+            maxRSS = float(maxRSS[:-1]) 
+
+        except:
+            maxRSS = 0.0
+
+        memoryStats[0] += maxRSS
+        memoryStats[1] += reqMem
+       
+        if '-' not in [userCPU, elapsed]:
+            # Handle requested cores
+            elapsed = timeStringToSeconds(elapsed)
+            userCPU = timeStringToSeconds(userCPU)
+            
+
+            # 1 CPU is the minimum in slurm, if they reserve 1, dont grade
+            # but show they are doing a good job.
+            if int(reqCPUs) != 1:
+                cpuStats[0] += userCPU
+                cpuStats[1] += elapsed * int(reqCPUs)
+
+                    
+            # The minimum time limit in slurm is 60 seconds
+            if timeLimit != 60:
+                tLimitStats[0] += elapsed
+                tLimitStats[1] += timeStringToSeconds(timeLimit)
+    
+    # Print job stats grades
+    grades = ['-', '-', '-']
+
+    if memoryStats[1] == 0:
+        gradeMemory = '-'
+    
+    else:
+        gradeMemory = round(memoryStats[0] / memoryStats[1] * 100, 2)
+        grades[0] = gradeMemory
+        gradeMemory = str(gradeMemory) + '%'
+
+    if cpuStats[1] == 0:
+        gradeCPU = '-'
+    
+    else:
+        gradeCPU = round(cpuStats[0] / cpuStats[1] * 100, 2)
+        grades[1] = gradeCPU
+        gradeCPU = str(gradeCPU) + '%'
+ 
+    if tLimitStats[1] == 0:
+        gradeTLimit = '-'
+    
+    else:
+        gradeTLimit = round(tLimitStats[0] / tLimitStats[1] * 100, 2)
+        grades[2] = gradeTLimit
+        gradeTLimit = str(gradeTLimit) + '%'
+
+    return [grades, memoryStats, cpuStats, tLimitStats]
+
+
+def getAccountJobStats(account, fromDate=None, toDate=None):
+    """
+    Desc: Get the job stats for an entire slurm account
+
+    Args:
+        account (string): slurm account name
+        fromDate (string) (optional): Start data collection from some date
+        endDate (string) (optional): End data collection on some date
+
+    Returns:
+        
+    """
+    accountStats = {}
+
+    # get a list of users in the account
+    users = getSlurmAccountUsers(account)
+
+    # Get the list of jobs for every user in the account
+    jobs = getJobStats(account, fromDate=fromDate, toDate=toDate)
+    
+    resourcesReserved = [0, 0, 0]
+    resourcesUsed     = [0, 0, 0]
+
+    for user in users:
+        userJobs = []
+        for i in jobs:
+            if len(i) >= 9 and i[8] == user:
+                userJobs.append(i)
+    
+            elif i[0].split('.')[0] in [j[0] for j in userJobs]:
+                userJobs.append(i)
+
+        stats = getUserJobStats(userJobs)
+        
+        if not stats:
+            stats = [[None, None, None], [0, 0], [0, 0], [0, 0]]
+ 
+        stats[0] = [i if i != None else None for i in stats[0]]
+    
+        if stats:
+            resourcesReserved[0] += stats[1][1]
+            resourcesReserved[1] += stats[2][1]
+            resourcesReserved[2] += stats[3][1]
+
+            resourcesUsed[0] += stats[1][0]
+            resourcesUsed[1] += stats[2][0]
+            resourcesUsed[2] += stats[3][0]
+
+            totalGrades = [i for i in stats[0] if i != '-' and i] 
+            total = None
+            if len(totalGrades) > 0:
+                total = str(round(statistics.mean(totalGrades), 2))
+            
+        accountStats[user] = stats
+    
+    # Calculate slurm account stats
+    finalStats = [None, None, None]
+
+    if resourcesReserved[0] != 0:
+        finalStats[0] = round(resourcesUsed[0] / resourcesReserved[0] * 100, 2)
+
+    if resourcesReserved[1] != 0:
+        finalStats[1] = round(resourcesUsed[1] / resourcesReserved[1] * 100, 2)
+
+    if resourcesReserved[2] != 0:
+        finalStats[2] = round(resourcesUsed[2] / resourcesReserved[2] * 100, 2)
+
+    finalGrades = [i for i in finalStats if i != None]
+    finalMean = None
+    if len(finalGrades) > 0:
+        finalMean = str(round(statistics.mean(finalGrades), 2))
+
+    accountStats['final'] = finalStats
+    return accountStats
+
+
+def main():
+    SHOW_EMPTY_USERS = False
+    NO_SIZE_LIMIT    = False
+    PARSEABLE        = False
+    START_DATE       = None
+    END_DATE         = None
+    ALL_ACCOUNTS     = False
+    NO_COLOR         = False
+
+    if '--no-color' in sys.argv:
+        NO_COLOR = True
+        sys.argv.remove('--no-color')
+
+    if '-S' in sys.argv:
+        START_DATE = sys.argv[sys.argv.index('-S') + 1]
+        sys.argv.remove('-S')
+        sys.argv.remove(START_DATE)
+
+    if '-E' in sys.argv:
+        END_DATE = sys.argv[sys.argv.index('-E') + 1]
+        sys.argv.remove('-E')
+        sys.argv.remove(END_DATE)
+
+    if '--parseable' in sys.argv:
+        PARSEABLE = True
+        sys.argv.remove('--parseable')
+
+    if '--show-empty' in sys.argv:
+        SHOW_EMPTY_USERS = True
+        sys.argv.remove('--show-empty')
+
+    if '--all-accounts' in sys.argv:
+        ALL_ACCOUNTS = True
+        sys.argv.remove('--all-accounts')
+
+    if not ALL_ACCOUNTS and (len(sys.argv) == 1 or '--help' in sys.argv):
+        print('Usage: ', sys.argv[0].split('/')[-1], ' [ACCOUNT] [OPTION]...')
+        print('Show usage statistics for a slurm account and it\'s users')
+        print('\n  --show-empty    show slurm users with no jobs')
+        print('  --parseable     make output parseable')
+        print('  -S X            show stats for jobs since some date')
+        print('  -E X            show stats for jobs up to some date')
+        print('  --all-accounts  run for all accounts on slurm')
+        print('  --no-color      do not colorize stats')
+        print('\nGot bugs? Report to hpcsupport@nau.edu')
+        exit()
+
+    terminalWidth = shutil.get_terminal_size((80, 80))[0]
+    columnWidth = int(terminalWidth / 5)
+
+    labelString = ''
+
+    if not PARSEABLE:
+        if ALL_ACCOUNTS:
+            labelString =  'Account' + ' ' * (columnWidth - len('Account'))
+        
+        else:
+            labelString =  'User' + ' ' * (columnWidth - len('User'))
+        
+        labelString += 'Mem' + ' ' * (columnWidth - len('Mem'))
+        labelString += 'CPU' + ' ' * (columnWidth - len('CPU'))
+        labelString += 'TLimit' + ' ' * (columnWidth - len('TLimit'))
+        labelString += 'Total' + ' ' * (columnWidth - len('Total'))
+    
+    else:
+        if ALL_ACCOUNTS:
+            labelString = 'Account|Mem|CPU|TLimit|Total'
+
+        labelString = 'User|Mem|CPU|TLimit|Total'
+
+    print(labelString)
+
+    if not PARSEABLE:
+        print('=' * terminalWidth)
+
+    accountStats = [None, None, None]
+    resourcesReserved = [0, 0, 0]
+    resourcesUsed = [0, 0, 0]
+
+    if ALL_ACCOUNTS:
+        accounts = getSlurmAccounts()
+        for account in accounts:
+            stats = getAccountJobStats(account, START_DATE, END_DATE)
+
+            accountStats.append(stats['final'])
+
+            stats['final'] = [100 if i 
+                                  and i > 100 
+                                  else i 
+                              for i in stats['final']]
+
+            totalGrades = [i for i in stats['final'] if i] 
+            total = '-'
+
+            stats['final'] = [i if i else '-' for i in stats['final']]
+
+            if len(totalGrades) > 0:
+                total = str(round(statistics.mean(totalGrades), 2))
+
+            if stats['final'] == ['-', '-', '-'] and not SHOW_EMPTY_USERS:
+                continue
+           
+            if not PARSEABLE:
+                if len(account) < columnWidth:
+                    userStatsString = account
+                
+                else:
+                    userStatsString = account[:columnWidth-1] + '+'
+
+                userStatsString += ' ' * (columnWidth - len(account))                    
+
+                for i in range(len(stats['final'])):
+                    grade = ''
+                    gradeEnd = ''
+                    if not NO_COLOR and stats['final'][i] != '-':
+                        if float(stats['final'][i]) < 33:
+                            grade = Colors.RED
+
+                        elif float(stats['final'][i]) < 66:
+                            grade = Colors.YELLOW
+                        
+                        else:
+                            grade = Colors.GREEN
+
+                        gradeEnd = Colors.END
+                    
+                    userStatsString += grade + str(stats['final'][i])
+                    userStatsString += gradeEnd
+                    userStatsString += ' ' * (columnWidth \
+                                              - len(str(stats['final'][i])))
+               
+                userStatsString += total
+                userStatsString += ' ' * (columnWidth - len(total))
+
+
+            else:
+                userStatsString =  account + '|' + str(stats['final'][0]) + '|'
+                userStatsString += str(stats['final'][1]) + '|'
+                userStatsString += str(stats['final'][2]) + '|' + total
+
+            for i in range(len(stats['final'])):
+                if stats['final'][i] != '-':
+                    if accountStats[i]:
+                        accountStats[i].append(stats['final'][i])
+                    
+                    else:
+                        accountStats[i] = [stats['final'][i]]
+
+            print(userStatsString)
+    
+    else:
+        account = sys.argv[1]
+        users = getSlurmAccountUsers(account)
+        jobs = getJobStats(account, START_DATE, END_DATE)
+
+        for user in users:
+            userJobs = []
+            for i in jobs:
+                if len(i) >= 9 and i[8] == user:
+                    userJobs.append(i)
+        
+                elif i[0].split('.')[0] in [j[0] for j in userJobs]:
+                    userJobs.append(i)
+
+            stats = getUserJobStats(userJobs)
+            
+            if not stats and SHOW_EMPTY_USERS:
+                stats = [['-', '-', '-'], [0, 0], [0, 0], [0, 0]]
+
+            if stats:
+                resourcesReserved[0] += stats[1][1]
+                resourcesReserved[1] += stats[2][1]
+                resourcesReserved[2] += stats[3][1]
+
+                resourcesUsed[0] += stats[1][0]
+                resourcesUsed[1] += stats[2][0]
+                resourcesUsed[2] += stats[3][0]
+
+                userStatsString = ''
+                
+                totalGrades = [i for i in stats[0] if i != '-'] 
+                total = '-'
+                if len(totalGrades) > 0:
+                    total = str(round(statistics.mean(totalGrades), 2))
+                
+                if not PARSEABLE:
+                    userStatsString = user
+                    userStatsString += ' ' * (columnWidth - len(user))                    
+
+                    for i in range(len(stats[0])):
+                        grade = ''
+                        gradeEnd = ''
+                        if not NO_COLOR and stats[0][i] != '-':
+                            if stats[0][i] < 33:
+                                grade = Colors.RED
+
+                            elif stats[0][i] < 66:
+                                grade = Colors.YELLOW
+                            
+                            else:
+                                grade = Colors.GREEN
+
+                            gradeEnd = Colors.END
+                        
+                        userStatsString += grade + str(stats[0][i]) + gradeEnd
+                        userStatsString += ' ' * (columnWidth \
+                                                  - len(str(stats[0][i])))
+                   
+                    userStatsString += total
+                    userStatsString += ' ' * (columnWidth - len(total))
+
+                else:
+                    userStatsString =  user + '|' + str(stats[0][0]) + '|'
+                    userStatsString += str(stats[0][1]) + '|' 
+                    userStatsString += str(stats[0][2]) + '|'
+                    userStatsString += total
+
+                print(userStatsString)
+
+    # Calculate slurm account stats
+    finalStats = ['-', '-', '-']
+
+    if not ALL_ACCOUNTS:
+        if resourcesReserved[0] != 0:
+            finalStats[0] = round(resourcesUsed[0] / resourcesReserved[0] * 100, 2)
+
+        if resourcesReserved[1] != 0:
+            finalStats[1] = round(resourcesUsed[1] / resourcesReserved[1] * 100, 2)
+
+        if resourcesReserved[2] != 0:
+            finalStats[2] = round(resourcesUsed[2] / resourcesReserved[2] * 100, 2)
+
+    else:
+        finalStats[0] = round(statistics.mean(accountStats[0]), 2)
+        finalStats[1] = round(statistics.mean(accountStats[1]), 2)
+        finalStats[2] = round(statistics.mean(accountStats[2]), 2)
+
+    finalGrades = [i for i in finalStats if i != '-']
+    finalMean = '-'
+    if len(finalGrades) > 0:
+        finalMean = str(round(statistics.mean(finalGrades), 2))
+
+    finalStatsString = ''
+
+    if not PARSEABLE:
+        print('=' * terminalWidth + '\n')
+        finalStatsString =  'Requested Memory: ' + str(finalStats[0]) + '\n'
+        finalStatsString += 'Requested Cores : ' + str(finalStats[1]) + '\n'
+        finalStatsString += 'Time Limit      : ' + str(finalStats[2]) + '\n'
+        finalStatsString += '=' * len('Efficiency Score: ' + finalMean) + '\n'
+        finalStatsString += 'Efficiency Score: ' + finalMean + '\n'
+        finalStatsString += '=' * len('Efficiency Score: ' + finalMean) + '\n'
+
+    else:
+        finalStatsString =  'STATS|' + str(finalStats[0]) + '|'
+        finalStatsString += str(finalStats[1]) + '|' + str(finalStats[2]) + '|'
+        finalStatsString += finalMean
+
+    print(finalStatsString)
+
+if __name__ == '__main__':
+    main()
