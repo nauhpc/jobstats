@@ -1,7 +1,7 @@
 # Jobstats
 
 ## Overview 
-Provides a tookit of scripts to easily view and pipe data on a user or account's resource usage data from Slurm's `sacct` tool.
+Provides a toolkit of scripts to easily view and pipe data on a user or account's resource usage data from Slurm's `sacct` tool.
 
 ## Installation
 
