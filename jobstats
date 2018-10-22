@@ -568,6 +568,10 @@ def main():
                 jobString += ' ' * spaceLeft + '   '
                 
             else:
+                # Replace incorrect Gigabyte notation with Megabyte
+                if valIndex == 2 and valString != '-':
+                    valString = valString.replace('G', 'M')
+
                 jobString += valString
 
                 if valString != i[-1]:
