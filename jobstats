@@ -406,10 +406,14 @@ def main():
             timeLimit = i[6]
             elapsed   = i[7]
             state     = i[8]
-            
+           
             usageByCore = False
             if 'c' in reqMem:
                 usageByCore = True
+
+            mod = 1
+            if 'G' in reqMem:
+                mod = 1000
 
             for letter in string.ascii_letters:
                 reqMem = reqMem.replace(letter, '')
@@ -421,12 +425,8 @@ def main():
             else:
                 reqMem = float(reqMem)
 
-            if int(reqMem) < 1000:
-                i[2] = str(int(reqMem) * 1000) + 'M'
-                
-            else:
-                i[2] = str(reqMem) + 'G'
-            
+            i[2] = str(int(reqMem) * mod) + 'M'
+
             # Don't count incomplete jobs towards the overall grade
             if 'CANCELLED' in state or state in ['OUT_OF_MEMORY', 'FAILED', 
                                                  'TIMEOUT']:
@@ -530,8 +530,10 @@ def main():
             # If the column value length > max length for column, truncate it
             if not PARSEABLE:
                 if valIndex in [2, 3] and valString != '-':
+
                     if 'M' in valString or 'G' in valString:
                         valString = valString[:-1]
+
 
                     # If the value is less than 1GB, display the maxRXX in
                     # megabytes
