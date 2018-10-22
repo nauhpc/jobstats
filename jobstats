@@ -417,12 +417,16 @@ def main():
 
             if usageByCore:
                 reqMem = float(reqMem) * float(reqCPUs)
-                i[2] = str(reqMem) + 'G'
             
             else:
                 reqMem = float(reqMem)
-                i[2] = str(reqMem) + 'G'
 
+            if int(reqMem) < 1000:
+                i[2] = str(int(reqMem) * 1000) + 'M'
+                
+            else:
+                i[2] = str(reqMem) + 'G'
+            
             # Don't count incomplete jobs towards the overall grade
             if 'CANCELLED' in state or state in ['OUT_OF_MEMORY', 'FAILED', 
                                                  'TIMEOUT']:
@@ -529,9 +533,22 @@ def main():
                     if 'M' in valString or 'G' in valString:
                         valString = valString[:-1]
 
-                    valInGigs = float(valString) / (pow(2,10))
-                    valString = str("{0:0.2f}".format(valInGigs))
-                    valString = valString[:4] + 'G'
+                    # If the value is less than 1GB, display the maxRXX in
+                    # megabytes
+                    if float(valString) < 1000:
+                        valString = str(float(valString))
+
+                        valString = valString[:4] + 'M'
+
+                        # Remove any trailing dots
+                        if valString[-2] == '.':
+                            valString = valString.replace('.', '')
+
+
+                    else:
+                        valInGigs = float(valString) / (pow(2,10))
+                        valString = str("{0:0.2f}".format(valInGigs))
+                        valString = valString[:4] + 'G'
 
                 if NO_COLOR:
                     rating = ''
@@ -551,6 +568,10 @@ def main():
                 jobString += ' ' * spaceLeft + '   '
                 
             else:
+                # Replace incorrect Gigabyte notation with Megabyte
+                if valIndex == 2 and valString != '-':
+                    valString = valString.replace('G', 'M')
+
                 jobString += valString
 
                 if valString != i[-1]:
