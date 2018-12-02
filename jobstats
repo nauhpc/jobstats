@@ -17,6 +17,7 @@ import shutil        # Get the terminal size
 import configparser  # Read args from config file
 import statistics    # Calculating median
 import shlex         # Ensure strings sent to bash are properly escaped
+import os
 
 
 class Colors:
@@ -150,7 +151,8 @@ def timeStringToSeconds(timeString):
 def main():
     # Read in config args
     config = configparser.ConfigParser()
-    config.read('jobstats-config.ini')
+    configFilePath = (os.path.dirname(__file__) + str('/jobstats-config.ini'))
+    config.read(configFilePath)
     SHOW_JOB_CHILDREN  = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True' 
     MEMORY_WEIGHT      = int(config['DEFAULTS']['MEMORY_WEIGHT'])
     CPU_WEIGHT         = int(config['DEFAULTS']['CPU_WEIGHT'])
