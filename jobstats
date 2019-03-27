@@ -98,10 +98,15 @@ def getRunningJobStats(jobID):
    
     if len(out) != 2:
         return None
-   
-    # maxRSS from sstat is in K, convert to G
-    if out[1][-1] == 'K':
-        out[1] = str(int(out[1][:-1]) / pow(2, 10)) + 'M'
+  
+    try:
+        # maxRSS from sstat is in K, convert to G
+        if out[1][-1] == 'K':
+            out[1] = str(int(out[1][:-1]) / pow(2, 10)) + 'M'
+
+    # Memory was not available in the call
+    except IndexError:
+        out[1] = None
    
     return out
 
