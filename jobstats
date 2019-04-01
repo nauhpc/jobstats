@@ -51,7 +51,7 @@ def getJobStats(extraArgs=None):
         if '-a' not in extraArgs:
             extraArgs += ' -a '
 
-    cmd = 'sacct --units=M -P -o' + formatString
+    cmd = 'sacct --state=COMPLETED --units=M -P -o' + formatString
    
     # Sanitize the args passed in by the user
     for arg in extraArgs.split(' '):
