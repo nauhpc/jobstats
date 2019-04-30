@@ -167,6 +167,7 @@ def main():
     if not 'DEFAULTS' in config:
         config.read_string(pkg_resources.resource_string('jobstats', 'jobstats-config.ini').decode('utf-8'))
     
+    MEM_HARD_CAP       = config['DEFAULTS']['MEMORY_HARD_CAP'] == 'True'
     SHOW_JOB_CHILDREN  = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True' 
     MEMORY_WEIGHT      = int(config['DEFAULTS']['MEMORY_WEIGHT'])
     CPU_WEIGHT         = int(config['DEFAULTS']['CPU_WEIGHT'])
@@ -456,6 +457,11 @@ def main():
 
                 except:
                     maxRSS = 0
+
+                # Check if Slurm bug has allowed memory to exceed
+                if MEM_HARD_CAP and reqMem < maxRSS:
+                    maxRSS = reqMem
+                    i[3] = i[2]
 
                 if reqMem != 0:
                     usage = (maxRSS / reqMem * MEMORY_WEIGHT)
