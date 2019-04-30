@@ -460,6 +460,7 @@ def main():
 
                 if MEM_HARD_CAP and reqMem < maxRSS:
                     maxRSS = reqMem
+                    valString = str(reqMem) + 'M'
 
                 if reqMem != 0:
                     usage = (maxRSS / reqMem * MEMORY_WEIGHT)
