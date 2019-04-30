@@ -458,9 +458,10 @@ def main():
                 except:
                     maxRSS = 0
 
+                # Check if Slurm bug has allowed memory to exceed
                 if MEM_HARD_CAP and reqMem < maxRSS:
                     maxRSS = reqMem
-                    valString = str(reqMem) + 'M'
+                    i[3] = i[2]
 
                 if reqMem != 0:
                     usage = (maxRSS / reqMem * MEMORY_WEIGHT)
