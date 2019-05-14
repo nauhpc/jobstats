@@ -10,7 +10,21 @@ Provides a toolkit of scripts to easily view and pipe data on a user or account'
 2. Slurm toolkit
 
 ### Install
-1. Clone and enter repository `git clone https://github.com/nauhpc/jobstats.git && cd jobstats`
+
+#### PyPi
+```
+pip install jobstats
+```
+
+#### Manual
+```
+git clone https://github.com/nauhpc/jobstats.git
+cd jobstats
+python3 setup.py install
+```
+
+#### Extremely manual
+1. Clone and enter repository `git clone https://github.com/nauhpc/jobstats.git`
 2. Add `jobstats` and `group_efficiency` to your PATH
 
 ## Configuration
