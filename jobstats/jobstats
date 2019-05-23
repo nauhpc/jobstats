@@ -107,7 +107,7 @@ def getRunningJobStats(jobID):
 
     # Memory was not available in the call
     except IndexError:
-        out[1] = None
+        out[1] = str(0)
    
     return out
 
