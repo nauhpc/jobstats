@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-
 import shlex       # Sanitize strings sent to bash
 import subprocess  # Pushing bash commands
 import sys         # argv
@@ -9,11 +8,15 @@ import pprint
 import re
 import shutil      # Get terminal width
 import statistics
-
+import mysql.connector as mysql
+import pkg_resources # Read from package directory
+import configparser
+import os
+import operator
 
 class Colors:
     GREEN   = '\033[92m'
-    YAN    = '\033[36m'
+    CYAN    = '\033[36m'
     YELLOW  = '\033[93m'
     ORANGE  = '\033[208m'
     RED     = '\033[91m'
@@ -59,46 +62,147 @@ def getSlurmAccounts():
     return accountNames
 
 
-def getJobStats(account, fromDate=None, toDate=None):
+def getJobStats(cursor, account, fromDate=None, toDate=None):
     """
-    Desc: Get the parsed output of 'jobstats'=
-          ('sacct --units=M -o jobid,jobname,reqmem,maxrss,reqcpus,usercpu,
-            timelimit,elapsed,state').
+    Desc: Retrieve jobstate data from the database
 
     Args:
         account (string): Name of slurm account
         fromDate (string) (optional): Add a start date
         toDate (string) (optional): Add an end date
+        cursor (mysql.connector): Reuse a mysql connection instead of
+                               initializing a new one
 
     Returns:
-        List of lists of the form [[jobID, reqMem, MaxRSS, ReqCPU, UserCPU, 
-                                    TimeLimit, elapsed, state, user], ...].
+        List of dictionaries containing jobstats data for a user
     """
-    formatString = 'jobid,reqmem,maxrss,reqcpus,usercpu,timelimit'
-    formatString += ',elapsed,state,user'
+    data = []
 
-    cmd = 'sacct --units=G -P -A '
-    cmd += shlex.quote(account)
-    cmd +=' -a -o ' + formatString
-  
+    query =  'SELECT username,memoryreq,memoryuse,idealcpu,cputime,tlimitreq,tlimituse'
+    query += ' FROM jobs WHERE account = %s'
+
+    args = [account]
+
     if fromDate:
-        cmd += ' -S ' + shlex.quote(fromDate)
+        query += ' AND date >= %s'
+        args.append(fromDate)
 
     if toDate:
-        cmd += ' -E ' + shlex.quote(toDate)
+        if fromDate:
+            query += ' AND '
 
-    out = subprocess.getstatusoutput(cmd)
+        query += 'date <= %s'
+        args.append(toDate)
+    
+    cursor.execute(query, tuple(args))
 
-    # Get return of jobstats command.
-    out = out[1].split('\n')
+    for username, memory_req, memory_use, ideal_cpu, cpu_time, tlimit_req, tlimit_use in cursor:
+        data.append({
+            'username': username,
+            'memory-req': memory_req if memory_req else 0,
+            'memory-use': memory_use if memory_use else 0,
+            'ideal-cpu': ideal_cpu if ideal_cpu else 0,
+            'cpu-time': cpu_time if cpu_time else 0,
+            'tlimit-req': tlimit_req if tlimit_req else 0,
+            'tlimit-use': tlimit_use if tlimit_use else 0
+        })
 
-    jobs = [] 
-    for row in out:
-        row = row.split('|')
-        row = ['-' if x == '' else x for x in row]
-        jobs.append(row)
+    return data
 
-    return jobs
+
+def parseAccountStats(data):
+    """
+    Desc: Parse a retrieved account's jobstats data.
+
+    Args:
+        data: array of dictionaries representing day efficiencies for a user
+
+    Returns:
+        {
+            'memory': float,
+            'cpu': float,
+            'tlimit': float,
+            'users': {
+                username: {
+                    'memory:' float,
+                    'cpu': float,
+                    'tlimit': float
+                },
+                ...
+            }
+        }
+    """
+    out = {
+        'memory': None,
+        'cpu':    None,
+        'tlimit': None,
+        'users': {}
+    }
+
+    # account-wide score
+    tlimit = [0, 0]
+    cpu    = [0, 0]
+    memory = [0, 0]
+
+    # store user stats in temporary place
+    users = {}
+
+    for entry in data:
+        if entry['username'] not in users:
+            users[entry['username']] = {
+                'tlimit': [0, 0],
+                'cpu':    [0, 0],
+                'memory': [0, 0]
+            }
+
+        users[entry['username']]['tlimit'][0] += entry['tlimit-use']
+        users[entry['username']]['tlimit'][1] += entry['tlimit-req']
+        tlimit[0] += entry['tlimit-use']
+        tlimit[1] += entry['tlimit-req']
+
+        users[entry['username']]['cpu'][0] += entry['cpu-time']
+        users[entry['username']]['cpu'][1] += entry['ideal-cpu']
+        cpu[0] += entry['cpu-time']
+        cpu[1] += entry['ideal-cpu']
+
+        users[entry['username']]['memory'][0] += entry['memory-use']
+        users[entry['username']]['memory'][1] += entry['memory-req']
+        memory[0] += entry['memory-use'] 
+        memory[1] += entry['memory-req']
+
+    out['memory'] = round(memory[0] / memory[1] * 100, 2) if 0 != memory[1] else None
+    out['cpu']    = round(cpu[0] / cpu[1] * 100, 2) if 0 != cpu[1] else None
+    out['tlimit'] = round(tlimit[0] / tlimit[1] * 100, 2) if 0 != tlimit[1] else None
+    
+    out['memory-req'] = memory[1]
+    out['memory-use'] = memory[0]
+    out['ideal-cpu']  = cpu[1]
+    out['cpu-time']   = cpu[0]
+    out['tlimit-req'] = tlimit[1]
+    out['tlimit-use'] = tlimit[0]
+    
+    for user in users:
+        out['users'][user] = {}
+
+        try:
+            out['users'][user]['memory'] = round(users[user]['memory'][0] / users[user]['memory'][1] * 100, 2) 
+
+        except:
+            out['users'][user]['memory'] = None
+
+        try:
+            out['users'][user]['tlimit'] = round(users[user]['tlimit'][0] / users[user]['tlimit'][1] * 100, 2)
+
+        except:
+            out['users'][user]['tlimit'] = None
+        
+        try:
+            out['users'][user]['cpu'] = round(users[user]['cpu'][0] / users[user]['cpu'][1] * 100, 2)
+
+        except:
+            out['users'][user]['cpu'] = None
+
+    return out
 
 
 def timeStringToSeconds(timeString):
@@ -143,244 +247,32 @@ def timeStringToSeconds(timeString):
     return timeInSeconds
 
 
-def getUserJobStats(jobs):
-    """
-    Desc: Get the job stats for a given user.
-
-    Args:
-        jobs (list): List of the form [jobid,reqmem, maxrss, reqcpus, usercpu,
-                                       timelimit, elapsed, state, user].
-
-    Returns:
-        List of the form [[gradeMemory, gradeCPU, gradeTLimit], memoryStats, 
-                          cpuStats, tLimitStats].
-    """
-    # Store [usage, allocated]
-    memoryStats = [0, 0]
-    cpuStats    = [0, 0]
-    tLimitStats = [0, 0]
-
-    # Prune jobs that useful information can't be parsed from
-    jobs = [i for i in jobs if i[7] not in ['RUNNING', 'PENDING', 'TIMEOUT', 
-                                            'OUT_OF_MEMOrY', 'FAILED'] 
-                            and 'CANCELLED' not in i[7]]
-
-    # In the case of a jobless user, abort
-    if len(jobs) < 1:
-        return None
-
-    for index, i in enumerate(jobs): 
-        # Check if this is a .batch or parent job. Don't display those
-        try:
-            if '.' in i[0]:
-                continue
-            elif '.batch' in jobs[index+1][0]:
-                i[2] = jobs[index+1][2]
-        
-        # In the case that we hit the last row, just keep going, it can't be a
-        # batch job
-        except IndexError:
-            None
-        
-        # Get the largest MaxRSS and reqCPU value for a batch job's child from 
-        # it's children
-        if index + 1 < len(jobs) and '.' in jobs[index+1][0] \
-                                 and '.' not in jobs[index][0]:
-            maxRSS    = i[2]
-            maxReqCPU = i[3]
-            
-            current = index + 1
-
-            while current < len(jobs) and '.' in jobs[current][0]:
-                # Get MaxRSS
-                currentRSS    = jobs[current][2]
-                currentReqCPU = jobs[current][3]
-
-                if currentRSS == '-':
-                    if int(maxReqCPU) < int(currentReqCPU):
-                        maxReqCPU = currentReqCPU
-
-                    current += 1
-                    continue
-
-                maxRSSSanitized = maxRSS
-
-                # clean RSS values of ascii characters
-                for letter in string.ascii_letters:
-                    currentRSS      = currentRSS.replace(letter, '')
-                    maxRSSSanitized = maxRSSSanitized.replace(letter, '')
-
-                if maxRSSSanitized != '-' and \
-                   float(currentRSS) > float(maxRSSSanitized):
-                    maxRSS = jobs[current][2]
-
-                if int(maxReqCPU) < int(currentReqCPU):
-                    maxReqCPU = currentReqCPU
-
-                current += 1
-
-            i[3] = maxReqCPU
-            i[2] = maxRSS 
-
-        reqMem    = i[1]
-        maxRSS    = i[2]
-        reqCPUs   = i[3]
-        userCPU   = i[4]
-        timeLimit = i[5]
-        elapsed   = i[6]
-        state     = i[7]
-
-        # Handle memory usage
-        usageByCore = False
-        if 'c' in reqMem:
-            usageByCore = True
-
-        for letter in string.ascii_letters:
-            reqMem = reqMem.replace(letter, '')
-            maxRSS = maxRSS.replace(letter, '') 
-
-        if usageByCore:
-            reqMem = float(reqMem) * float(reqCPUs)
-            i[1] = str(reqMem) + 'G'
-        
-        else:
-            reqMem = float(reqMem)
-            i[1] = str(reqMem) + 'G'
-
-        try:
-            maxRSS = float(maxRSS[:-1]) 
-
-        except:
-            maxRSS = 0.0
-
-        memoryStats[0] += maxRSS
-        memoryStats[1] += reqMem
-       
-        if '-' not in [userCPU, elapsed]:
-            # Handle requested cores
-            elapsed = timeStringToSeconds(elapsed)
-            userCPU = timeStringToSeconds(userCPU)
-            
-
-            # 1 CPU is the minimum in slurm, if they reserve 1, dont grade
-            # but show they are doing a good job.
-            if int(reqCPUs) != 1:
-                cpuStats[0] += userCPU
-                cpuStats[1] += elapsed * int(reqCPUs)
-
-                    
-            # The minimum time limit in slurm is 60 seconds
-            if timeLimit != 60:
-                tLimitStats[0] += elapsed
-                tLimitStats[1] += timeStringToSeconds(timeLimit)
-    
-    # Print job stats grades
-    grades = ['-', '-', '-']
-
-    if memoryStats[1] == 0:
-        gradeMemory = '-'
-    
-    else:
-        gradeMemory = round(memoryStats[0] / memoryStats[1] * 100, 2)
-        grades[0] = gradeMemory
-        gradeMemory = str(gradeMemory) + '%'
-
-    if cpuStats[1] == 0:
-        gradeCPU = '-'
-    
-    else:
-        gradeCPU = round(cpuStats[0] / cpuStats[1] * 100, 2)
-        grades[1] = gradeCPU
-        gradeCPU = str(gradeCPU) + '%'
- 
-    if tLimitStats[1] == 0:
-        gradeTLimit = '-'
-    
-    else:
-        gradeTLimit = round(tLimitStats[0] / tLimitStats[1] * 100, 2)
-        grades[2] = gradeTLimit
-        gradeTLimit = str(gradeTLimit) + '%'
-
-    return [grades, memoryStats, cpuStats, tLimitStats]
-
-
-def getAccountJobStats(account, fromDate=None, toDate=None):
-    """
-    Desc: Get the job stats for an entire slurm account
-
-    Args:
-        account (string): slurm account name
-        fromDate (string) (optional): Start data collection from some date
-        endDate (string) (optional): End data collection on some date
-
-    Returns:
-        
-    """
-    accountStats = {}
-
-    # get a list of users in the account
-    users = getSlurmAccountUsers(account)
-
-    # Get the list of jobs for every user in the account
-    jobs = getJobStats(account, fromDate=fromDate, toDate=toDate)
-    
-    resourcesReserved = [0, 0, 0]
-    resourcesUsed     = [0, 0, 0]
-
-    for user in users:
-        userJobs = []
-        for i in jobs:
-            if len(i) >= 9 and i[8] == user:
-                userJobs.append(i)
-    
-            elif i[0].split('.')[0] in [j[0] for j in userJobs]:
-                userJobs.append(i)
-
-        stats = getUserJobStats(userJobs)
-        
-        if not stats:
-            stats = [[None, None, None], [0, 0], [0, 0], [0, 0]]
- 
-        stats[0] = [i if i != None else None for i in stats[0]]
-    
-        if stats:
-            resourcesReserved[0] += stats[1][1]
-            resourcesReserved[1] += stats[2][1]
-            resourcesReserved[2] += stats[3][1]
-
-            resourcesUsed[0] += stats[1][0]
-            resourcesUsed[1] += stats[2][0]
-            resourcesUsed[2] += stats[3][0]
-
-            totalGrades = [i for i in stats[0] if i != '-' and i] 
-            total = None
-            if len(totalGrades) > 0:
-                total = str(round(statistics.mean(totalGrades), 2))
-            
-        accountStats[user] = stats
-    
-    # Calculate slurm account stats
-    finalStats = [None, None, None]
-
-    if resourcesReserved[0] != 0:
-        finalStats[0] = round(resourcesUsed[0] / resourcesReserved[0] * 100, 2)
-
-    if resourcesReserved[1] != 0:
-        finalStats[1] = round(resourcesUsed[1] / resourcesReserved[1] * 100, 2)
-
-    if resourcesReserved[2] != 0:
-        finalStats[2] = round(resourcesUsed[2] / resourcesReserved[2] * 100, 2)
-
-    finalGrades = [i for i in finalStats if i != None]
-    finalMean = None
-    if len(finalGrades) > 0:
-        finalMean = str(round(statistics.mean(finalGrades), 2))
-
-    accountStats['final'] = finalStats
-    return accountStats
-
-
 def main():
+    # Read in config args
+    config = configparser.ConfigParser()
+
+    # Attempt to read from the local directory
+    configFilePath = (os.path.dirname(__file__) + str('/jobstats-config.ini'))
+
+    config.read(configFilePath)
+    
+    # If config file is not in local directory, check resource directory
+    if not 'DEFAULTS' in config:
+        config.read_string(pkg_resources.resource_string('jobstats', 'jobstats-config.ini').decode('utf-8'))
+    
+    SHOW_JOB_CHILDREN  = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True' 
+    DB_USER = config['DEFAULTS']['DB_USER']   
+    DB_DB   = config['DEFAULTS']['DB_DB']   
+    DB_PASS = config['DEFAULTS']['DB_PASS']   
+    DB_HOST = config['DEFAULTS']['DB_HOST']   
+   
+    try:
+        cnx = mysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, db=DB_DB)
+    
+    except:
+        print('Error: No connection to database')
+        exit()
+
     SHOW_EMPTY_USERS = False
     NO_SIZE_LIMIT    = False
     PARSEABLE        = False
@@ -388,6 +280,9 @@ def main():
     END_DATE         = None
     ALL_ACCOUNTS     = False
     NO_COLOR         = False
+    THRESHOLD        = 100    
+    ACCOUNT_NUM      = 0
+
 
     if '--no-color' in sys.argv:
         NO_COLOR = True
@@ -414,6 +309,19 @@ def main():
     if '--all-accounts' in sys.argv:
         ALL_ACCOUNTS = True
         sys.argv.remove('--all-accounts')
+  
+    if '--threshold' in sys.argv:
+        THRESHOLD = sys.argv[sys.argv.index('--threshold') + 1]
+        sys.argv.remove('--threshold')
+        sys.argv.remove(THRESHOLD)
+    if '--number' in sys.argv:
+        ACCOUNT_NUM = sys.argv[sys.argv.index('--number') + 1]
+        sys.argv.remove('--number')
+        sys.argv.remove(ACCOUNT_NUM)
+
+        
+
+
 
     if not ALL_ACCOUNTS and (len(sys.argv) == 1 or '--help' in sys.argv):
         print('Usage: ', sys.argv[0].split('/')[-1], ' [ACCOUNT] [OPTION]...')
@@ -423,6 +331,8 @@ def main():
         print('  -S X            show stats for jobs since some date')
         print('  -E X            show stats for jobs up to some date')
         print('  --all-accounts  run for all accounts on slurm')
+        print('  --threshold     shows stats below a specified total')
+        print('  --number        shows the top accounts')
         print('  --no-color      do not colorize stats')
         print('\nGot bugs? Report to hpcsupport@nau.edu')
         exit()
@@ -455,33 +365,55 @@ def main():
     if not PARSEABLE:
         print('=' * terminalWidth)
 
-    accountStats = [None, None, None]
-    resourcesReserved = [0, 0, 0]
-    resourcesUsed = [0, 0, 0]
+    accountStats = {
+        'cpu': 0,
+        'memory': 0,
+        'tlimit': 0
+    }
+    
+    resourcesReserved = {
+        'cpu': 0,
+        'memory': 0,
+        'tlimit': 0
+    }
+
+    resourcesUsed = {
+        'cpu': 0,
+        'memory': 0,
+        'tlimit': 0
+    } 
+    
+    cursor = cnx.cursor()
 
     if ALL_ACCOUNTS:
         accounts = getSlurmAccounts()
+        group_efficiency=""
+        tuples={}
         for account in accounts:
-            stats = getAccountJobStats(account, START_DATE, END_DATE)
+            stats = getJobStats(cursor, account, START_DATE, END_DATE)
+            stats = parseAccountStats(stats)
 
-            accountStats.append(stats['final'])
+            totalGrades = [stats['memory'], stats['cpu'], stats['tlimit']]
+            final = [i if i else '-' for i in totalGrades]
 
-            stats['final'] = [100 if i 
-                                  and i > 100 
-                                  else i 
-                              for i in stats['final']]
-
-            totalGrades = [i for i in stats['final'] if i] 
-            total = '-'
-
-            stats['final'] = [i if i else '-' for i in stats['final']]
-
-            if len(totalGrades) > 0:
-                total = str(round(statistics.mean(totalGrades), 2))
-
-            if stats['final'] == ['-', '-', '-'] and not SHOW_EMPTY_USERS:
+            if len([i for i in totalGrades if i]) == 0 and not SHOW_EMPTY_USERS:
                 continue
-           
+
+            try:
+                total = str(round(statistics.mean([i for i in totalGrades if i]), 2))
+            
+            except:
+                total = '-'
+
+            
+            resourcesReserved['memory'] += stats['memory-req']
+            resourcesReserved['cpu']    += stats['ideal-cpu']
+            resourcesReserved['tlimit'] += stats['tlimit-req']
+
+            resourcesUsed['memory'] += stats['memory-use']
+            resourcesUsed['cpu']    += stats['cpu-time']
+            resourcesUsed['tlimit'] += stats['tlimit-use']
+          
             if not PARSEABLE:
                 if len(account) < columnWidth:
                     userStatsString = account
@@ -491,14 +423,14 @@ def main():
 
                 userStatsString += ' ' * (columnWidth - len(account))                    
 
-                for i in range(len(stats['final'])):
+                for i in range(len(final)):
                     grade = ''
                     gradeEnd = ''
-                    if not NO_COLOR and stats['final'][i] != '-':
-                        if float(stats['final'][i]) < 33:
+                    if not NO_COLOR and final[i] != '-':
+                        if float(final[i]) < 33:
                             grade = Colors.RED
 
-                        elif float(stats['final'][i]) < 66:
+                        elif float(final[i]) < 66:
                             grade = Colors.YELLOW
                         
                         else:
@@ -506,77 +438,142 @@ def main():
 
                         gradeEnd = Colors.END
                     
-                    userStatsString += grade + str(stats['final'][i])
+                    userStatsString += grade + str(final[i])
                     userStatsString += gradeEnd
                     userStatsString += ' ' * (columnWidth \
-                                              - len(str(stats['final'][i])))
+                                              - len(str(final[i])))
                
                 userStatsString += total
                 userStatsString += ' ' * (columnWidth - len(total))
 
 
             else:
-                userStatsString =  account + '|' + str(stats['final'][0]) + '|'
-                userStatsString += str(stats['final'][1]) + '|'
-                userStatsString += str(stats['final'][2]) + '|' + total
+                userStatsString =  account + '|' + str(final[0]) + '|'
+                userStatsString += str(final[1]) + '|'
+                userStatsString += str(final[2]) + '|' + total
+            
+           
+            group_efficiency=userStatsString
+            
+            #check if data was parseable and split based on the delimiter
+            if group_efficiency.find('|') > -1:
+                lines=group_efficiency.split('|')
+            else:
+                lines=group_efficiency.split()
+                  
+            listtosort = []
+           #put each line  into a list 
+            for x in lines:
+                listtosort.append(x)
+            field1=listtosort[0]
+            field2=listtosort[1]
+            field3=listtosort[2]
+            field4=listtosort[3]
+            field5=listtosort[4]
+            
+            #handle show empty case
+            if listtosort[4] == '-':
+                field5 = '0.00'
+            else:
+                field5 = listtosort[4]
+            
+            #take values and put into a dictionary to sort 
+            key=float(field5)
+            key+=100
+            #if key is 100 we want to return to original value of 0
+            if key ==100:
+                key =0
+            key=str(key)+field1
+            tuples.update({key:(field1,field2,field3,field4,field5)})
+        sortedlist=sorted(tuples.items(),key=operator.itemgetter(0),reverse=True)
+        data=[]
+        
+        #take sorted list from dictionary and put them into a list
+        for elem in sortedlist:
+            elem=list(elem)
+            values=(elem[1])
+            data.append([values[0],values[1],values[2],values[3],values[4]])
+        line=''
+        count=0
+        #take each element in data and ignore color codes to account for formatting
+        for row in data:
+            line=''
+            for elem in row:
+                reaesc = re.compile(r'\x1b[^m]*m') 
+                new_text = reaesc.sub('', str(elem))
+                length=len(str(new_text))
+                line+=  str(elem) + (' '*(columnWidth-length))
+            line=re.sub('0.00', '-', str(line) )   
+             #check if we were givrn number of accounts to display
+            if count < float(ACCOUNT_NUM):
+               #if given number of accounts print for that number
+               if PARSEABLE:
+                   print(re.sub(r"\s+", '|', line))
+                   count+=1      
+               else:         
+                   print(line)
+                   count+=1
+            #if number of accounts were not given, print the display as normal
+            if count ==0:
+                if PARSEABLE:
+                    linebuffer=line.split()
+                    value= linebuffer[4]
+                    #changes value back to original starting value
+                    if value == '-':
+                        value = 0
+                    if float(value) < float(THRESHOLD):
+                        print(re.sub(r"\s+", '|', line))
 
-            for i in range(len(stats['final'])):
-                if stats['final'][i] != '-':
-                    if accountStats[i]:
-                        accountStats[i].append(stats['final'][i])
-                    
-                    else:
-                        accountStats[i] = [stats['final'][i]]
-
-            print(userStatsString)
-    
+                else:
+                    linebuffer=line.split()
+                    value= linebuffer[4]
+                    #changes value back to the original value
+                    if value == '-':
+                        value = 0
+                    if float(value) <  float(THRESHOLD):
+                        print(line)
+             
     else:
         account = sys.argv[1]
-        users = getSlurmAccountUsers(account)
-        jobs = getJobStats(account, START_DATE, END_DATE)
+        stats = getJobStats(cursor, account, START_DATE, END_DATE)
+        stats = parseAccountStats(stats)
 
-        for user in users:
-            userJobs = []
-            for i in jobs:
-                if len(i) >= 9 and i[8] == user:
-                    userJobs.append(i)
-        
-                elif i[0].split('.')[0] in [j[0] for j in userJobs]:
-                    userJobs.append(i)
+        resourcesReserved['memory'] += stats['memory-req']
+        resourcesReserved['cpu']    += stats['ideal-cpu']
+        resourcesReserved['tlimit'] += stats['tlimit-req']
 
-            stats = getUserJobStats(userJobs)
-            
-            if not stats and SHOW_EMPTY_USERS:
-                stats = [['-', '-', '-'], [0, 0], [0, 0], [0, 0]]
+        resourcesUsed['memory'] += stats['memory-use']
+        resourcesUsed['cpu']    += stats['cpu-time']
+        resourcesUsed['tlimit'] += stats['tlimit-use']
+        efficiency=''
+        tuples={} 
+        for user in stats['users']:
+            if len([i for i in stats['users'][user] if i and i != 0]) == 0:
+                if not SHOW_EMPTY_USERS:
+                    continue
 
             if stats:
-                resourcesReserved[0] += stats[1][1]
-                resourcesReserved[1] += stats[2][1]
-                resourcesReserved[2] += stats[3][1]
-
-                resourcesUsed[0] += stats[1][0]
-                resourcesUsed[1] += stats[2][0]
-                resourcesUsed[2] += stats[3][0]
-
                 userStatsString = ''
                 
-                totalGrades = [i for i in stats[0] if i != '-'] 
+                totalGrades = [stats['users'][user][i] if stats['users'][user][i] else '-' for i in stats['users'][user] ] 
                 total = '-'
-                if len(totalGrades) > 0:
-                    total = str(round(statistics.mean(totalGrades), 2))
+
+                total = str(round(statistics.mean([stats['users'][user][i] for i in stats['users'][user] if stats['users'][user][i]]), 2))
+
+                total = '-' if total == 0 else total
                 
                 if not PARSEABLE:
                     userStatsString = user
                     userStatsString += ' ' * (columnWidth - len(user))                    
 
-                    for i in range(len(stats[0])):
+                    for i in range(len(totalGrades)):
                         grade = ''
                         gradeEnd = ''
-                        if not NO_COLOR and stats[0][i] != '-':
-                            if stats[0][i] < 33:
+                        if not NO_COLOR and totalGrades[i] != '-':
+                            if totalGrades[i] < 33:
                                 grade = Colors.RED
 
-                            elif stats[0][i] < 66:
+                            elif totalGrades[i] < 66:
                                 grade = Colors.YELLOW
                             
                             else:
@@ -584,40 +581,84 @@ def main():
 
                             gradeEnd = Colors.END
                         
-                        userStatsString += grade + str(stats[0][i]) + gradeEnd
+                        userStatsString += grade + str(totalGrades[i]) + gradeEnd
                         userStatsString += ' ' * (columnWidth \
-                                                  - len(str(stats[0][i])))
+                                                  - len(str(totalGrades[i])))
                    
                     userStatsString += total
                     userStatsString += ' ' * (columnWidth - len(total))
 
                 else:
-                    userStatsString =  user + '|' + str(stats[0][0]) + '|'
-                    userStatsString += str(stats[0][1]) + '|' 
-                    userStatsString += str(stats[0][2]) + '|'
+                    userStatsString =  user + '|' + str(totalGrades[0]) + '|'
+                    userStatsString += str(totalGrades[1]) + '|' 
+                    userStatsString += str(totalGrades[2]) + '|'
                     userStatsString += total
+            #takes multiline variable and splits intp segments
+            efficiency=userStatsString.split('\n')    
+            #reads each line and assigns each field to a variable
+            for line in efficiency:
+                if line.find('|') < 0: 
+                    display=line.split()
+                else:
+                    display=line.split('|')
+                listtosort=[]
+                for x in display:
+                    listtosort.append(x)
+                field1=listtosort[0]
+                field2=listtosort[1]
+                field3=listtosort[2]
+                field4=listtosort[3]
+                field5=listtosort[4]
+            
+                #handle show empty case
+                if listtosort[4] == '-':
+                    field5 = 0
+                else:
+                    field5 = listtosort[4]
+                #take values and put into a dictionary to sort
+                key=float(field5)
+                key+=100
+                tuples.update({key:(field1,field2,field3,field4,field5)})
+            sortedlist=sorted(tuples.items(),key=operator.itemgetter(0),reverse=True)
+            data=[]
+            for elem in sortedlist:
+                
+                elem=list(elem)
+                values=(elem[1])
+                data.append([values[0],values[1],values[2],values[3],values[4]])
+            line=''
+            count=0
+            #take each element in data and ignore color codes to account for formatting
+        for row in data:
+            line=''
+            for elem in row:
+                reaesc = re.compile(r'\x1b[^m]*m')
+                new_text = reaesc.sub('', str(elem))
+                length=len(str(new_text))
+                line+=  str(elem) + (' '*(columnWidth-length))
 
-                print(userStatsString)
+            if PARSEABLE:
+               print(re.sub(r"\s+", '|', line))
+
+
+            else: 
+               print(line) 
+            #for line in sortedlist:
+             #   print(line) 
+            
 
     # Calculate slurm account stats
-    finalStats = ['-', '-', '-']
+    finalStats = {
+        'memory': '-',
+        'cpu': '-',
+        'tlimit': '-'
+    }
 
-    if not ALL_ACCOUNTS:
-        if resourcesReserved[0] != 0:
-            finalStats[0] = round(resourcesUsed[0] / resourcesReserved[0] * 100, 2)
+    for key in resourcesReserved:
+        if resourcesReserved[key] != 0:
+            finalStats[key] = round(resourcesUsed[key] / resourcesReserved[key] * 100, 2)
 
-        if resourcesReserved[1] != 0:
-            finalStats[1] = round(resourcesUsed[1] / resourcesReserved[1] * 100, 2)
-
-        if resourcesReserved[2] != 0:
-            finalStats[2] = round(resourcesUsed[2] / resourcesReserved[2] * 100, 2)
-
-    else:
-        finalStats[0] = round(statistics.mean(accountStats[0]), 2)
-        finalStats[1] = round(statistics.mean(accountStats[1]), 2)
-        finalStats[2] = round(statistics.mean(accountStats[2]), 2)
-
-    finalGrades = [i for i in finalStats if i != '-']
+    finalGrades = [i for i in finalStats.values() if i != '-']
     finalMean = '-'
     if len(finalGrades) > 0:
         finalMean = str(round(statistics.mean(finalGrades), 2))
@@ -626,16 +667,16 @@ def main():
 
     if not PARSEABLE:
         print('=' * terminalWidth + '\n')
-        finalStatsString =  'Requested Memory: ' + str(finalStats[0]) + '\n'
-        finalStatsString += 'Requested Cores : ' + str(finalStats[1]) + '\n'
-        finalStatsString += 'Time Limit      : ' + str(finalStats[2]) + '\n'
+        finalStatsString =  'Requested Memory: ' + str(finalStats['memory']) + '\n'
+        finalStatsString += 'Requested Cores : ' + str(finalStats['cpu']) + '\n'
+        finalStatsString += 'Time Limit      : ' + str(finalStats['tlimit']) + '\n'
         finalStatsString += '=' * len('Efficiency Score: ' + finalMean) + '\n'
         finalStatsString += 'Efficiency Score: ' + finalMean + '\n'
         finalStatsString += '=' * len('Efficiency Score: ' + finalMean) + '\n'
 
     else:
-        finalStatsString =  'STATS|' + str(finalStats[0]) + '|'
-        finalStatsString += str(finalStats[1]) + '|' + str(finalStats[2]) + '|'
+        finalStatsString =  'STATS|' + str(finalStats['memory']) + '|'
+        finalStatsString += str(finalStats['cpu']) + '|' + str(finalStats['tlimit']) + '|'
         finalStatsString += finalMean
 
     print(finalStatsString)
