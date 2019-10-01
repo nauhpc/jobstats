@@ -13,6 +13,11 @@ import pkg_resources # Read from package directory
 import configparser
 import os
 import operator
+import datetime
+from dateutil.relativedelta import relativedelta
+import time
+
+
 
 class Colors:
     GREEN   = '\033[92m'
@@ -276,13 +281,13 @@ def main():
     SHOW_EMPTY_USERS = False
     NO_SIZE_LIMIT    = False
     PARSEABLE        = False
-    START_DATE       = None
-    END_DATE         = None
+    START_DATE       = (datetime.datetime.today() + relativedelta(days=-1)).strftime('%Y%m%d')
+    END_DATE         = (datetime.datetime.today() + relativedelta(days=0)).strftime('%Y%m%d')
     ALL_ACCOUNTS     = False
     NO_COLOR         = False
     THRESHOLD        = 100    
     ACCOUNT_NUM      = 0
-
+    SORTFLAG         = 0
 
     if '--no-color' in sys.argv:
         NO_COLOR = True
@@ -297,11 +302,21 @@ def main():
         END_DATE = sys.argv[sys.argv.index('-E') + 1]
         sys.argv.remove('-E')
         sys.argv.remove(END_DATE)
-
+    if  '-W' in sys.argv:
+        sys.argv.remove('-W')    
+        START_DATE=(datetime.datetime.today() + relativedelta(days=-7)).strftime('%Y%m%d')
+        END_DATE=(datetime.datetime.today() + relativedelta(days=0)).strftime('%Y%m%d')
+    if '-M' in sys.argv:
+        sys.argv.remove('-M')
+        START_DATE=(datetime.datetime.today() + relativedelta(days=-31)).strftime('%Y%m%d')
+        END_DATE=(datetime.datetime.today() + relativedelta(days=0)).strftime('%Y%m%d')
+    if '-Q' in sys.argv:
+        sys.argv.remove('-Q')
+        START_DATE=(datetime.datetime.today() + relativedelta(days=-100)).strftime('%Y%m%d')
+        END_DATE=(datetime.datetime.today() + relativedelta(days=0)).strftime('%Y%m%d')
     if '--parseable' in sys.argv:
         PARSEABLE = True
         sys.argv.remove('--parseable')
-
     if '--show-empty' in sys.argv:
         SHOW_EMPTY_USERS = True
         sys.argv.remove('--show-empty')
@@ -318,21 +333,32 @@ def main():
         ACCOUNT_NUM = sys.argv[sys.argv.index('--number') + 1]
         sys.argv.remove('--number')
         sys.argv.remove(ACCOUNT_NUM)
-
+    if '--memory' in sys.argv:
+        SORTFLAG = 1
+    if '--cores' in sys.argv:
+        SORTFLAG = 2
+    if '--time' in sys.argv:
+        SORTFLAG = 3
         
 
 
 
-    if not ALL_ACCOUNTS and (len(sys.argv) == 1 or '--help' in sys.argv):
+    if not ALL_ACCOUNTS and (len(sys.argv) == 1 or '--help' in sys.argv or '-h' in sys.argv):
         print('Usage: ', sys.argv[0].split('/')[-1], ' [ACCOUNT] [OPTION]...')
         print('Show usage statistics for a slurm account and it\'s users')
         print('\n  --show-empty    show slurm users with no jobs')
         print('  --parseable     make output parseable')
         print('  -S X            show stats for jobs since some date')
         print('  -E X            show stats for jobs up to some date')
+        print('  -W              show stats for jobs for the past week' )
+        print('  -M              show stats for jobs for the past month' )
+        print('  -Q              show stats for jobs for the past quarter' )
         print('  --all-accounts  run for all accounts on slurm')
         print('  --threshold     shows stats below a specified total')
         print('  --number        shows the top accounts')
+        print('  --memory        sorts the table by the memory')
+        print('  --cores         sorts the table by the cores')
+        print('  --time          sorts the table by the time')
         print('  --no-color      do not colorize stats')
         print('\nGot bugs? Report to hpcsupport@nau.edu')
         exit()
@@ -476,9 +502,34 @@ def main():
                 field5 = '0.00'
             else:
                 field5 = listtosort[4]
+            if listtosort[3] == '-':
+                field4 = '0.00'
+            else:
+                field4 = listtosort[3]
+            if listtosort[2] == '-':
+                field3 = '0.00'
+            else:
+                field3 = listtosort[2]
+            if listtosort[1] == '-':
+                field2 = '0.00'
+            else:
+                field2 = listtosort[1]
             
             #take values and put into a dictionary to sort 
-            key=float(field5)
+            if SORTFLAG == 0:
+                key=float(field5)
+            if SORTFLAG == 1:
+                reaesc = re.compile(r'\x1b[^m]*m')
+                new_field2 = reaesc.sub('', field2)
+                key=float(new_field2)
+            if SORTFLAG == 2:
+                reaesc = re.compile(r'\x1b[^m]*m')
+                new_field3 = reaesc.sub('', field3)
+                key=float(new_field3)
+            if SORTFLAG == 3:
+                reaesc = re.compile(r'\x1b[^m]*m')
+                new_field4 = reaesc.sub('', field4)
+                key=float(new_field4)
             key+=100
             #if key is 100 we want to return to original value of 0
             if key ==100:
@@ -499,11 +550,11 @@ def main():
         for row in data:
             line=''
             for elem in row:
+                elem=re.sub('0.00','-',str(elem))
                 reaesc = re.compile(r'\x1b[^m]*m') 
                 new_text = reaesc.sub('', str(elem))
                 length=len(str(new_text))
                 line+=  str(elem) + (' '*(columnWidth-length))
-            line=re.sub('0.00', '-', str(line) )   
              #check if we were givrn number of accounts to display
             if count < float(ACCOUNT_NUM):
                #if given number of accounts print for that number
