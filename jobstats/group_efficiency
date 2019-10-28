@@ -288,6 +288,7 @@ def main():
     THRESHOLD        = 100    
     ACCOUNT_NUM      = 0
     SORTFLAG         = 0
+    POSSIBLE_DATE_FORMATS = ['%m/%d/%Y', '%m/%d/%y', '%m%d%y', '%m%d%Y', '%Y-%m-%d', '%m.%d.%Y', '%Y/%m/%d', '%y/%m/%d']
 
     if '--no-color' in sys.argv:
         NO_COLOR = True
@@ -297,15 +298,33 @@ def main():
         START_DATE = sys.argv[sys.argv.index('-S') + 1]
         sys.argv.remove('-S')
         sys.argv.remove(START_DATE)
+        for date_format in POSSIBLE_DATE_FORMATS :
+            try:
+                parsed_date = datetime.datetime.strptime(START_DATE, date_format).date() # try to get the date
+                break # if correct format, don't test any other formats
+            except ValueError:
+                pass # if incorrect format, keep trying other formats
+        START_DATE=datetime.datetime.strptime(str(parsed_date), '%Y-%m-%d').strftime('%m/%d/%y')
+      
+
 
     if '-E' in sys.argv:
         END_DATE = sys.argv[sys.argv.index('-E') + 1]
         sys.argv.remove('-E')
         sys.argv.remove(END_DATE)
+        for date_format in POSSIBLE_DATE_FORMATS :
+            try:
+                parsed_date = datetime.datetime.strptime(END_DATE, date_format).date() # try to get the date
+                break # if correct format, don't test any other formats
+            except ValueError:
+                pass # if incorrect format, keep trying other formats
+        END_DATE=datetime.datetime.strptime(str(parsed_date), '%Y-%m-%d').strftime('%m/%d/%y')  
+
     if  '-W' in sys.argv:
         sys.argv.remove('-W')    
         START_DATE=(datetime.datetime.today() + relativedelta(days=-7)).strftime('%Y%m%d')
         END_DATE=(datetime.datetime.today() + relativedelta(days=0)).strftime('%Y%m%d')
+    
     if '-M' in sys.argv:
         sys.argv.remove('-M')
         START_DATE=(datetime.datetime.today() + relativedelta(days=-31)).strftime('%Y%m%d')
