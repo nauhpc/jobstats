@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+
+import shlex       # Sanitize strings sent to bash
+import subprocess  # Pushing bash commands
+import sys         # argv
+import string      # Clearing jobstats entries of M's, G's, etc
+import pprint
+import re
+import shutil      # Get terminal width
+import statistics
+import mysql.connector as mysql
+import pkg_resources # Read from package directory
+import configparser
+import os
+import operator
+import datetime
+from dateutil.relativedelta import relativedelta
+import time
+import code
+import argparse
+import subprocess
+import operator
+
+# have the width of each column match it's widest cell
+
+def formatRow(fmtString, strList, maxLen):
+    """
+    Desc: Format a list of strings, helper function for createTable when parsable is False
+
+    Args:
+        fmtString (string): python formatting string
+        strList (list of strings): list of string elements for the row
+        maxLen (list of ints): maximum length for each element of row
+
+    Returns:
+        string
+    """
+    if len(strList) != 7:
+        raise Exception("cannot form a row with " + str(len(strList)) +
+                        " elements, expected 7")
+    if len(maxLen) != 7:
+        raise Exception("maxLen has " + str(len(maxLen)) +
+                        " lengths, expected 7")
+    for i in range(len(strList)):
+        if len(strList[i]) > maxLen[i]:
+            strList[i] = strList[i][:maxLen[i] - 1] + "+"
+    return fmtString.format(strList[0], strList[1], strList[2], strList[3],
+                            strList[4], strList[5], strList[6])
+
+def createTable(fields, data, totalWidth, number, parsable):
+    """
+    Desc: Print a table with job efficiency information
+
+    Args:
+        fields (list of strings): list of keys to extract from the data dict, order matters
+        data (dict): a dictionary where each key is a unique uid, values are efficiency info
+        totalWidth (string): specifies max length of each row when parsable is False
+        number (int): Maximum number of rows to display in table, -1 specifies all
+        parsable (boolean): True specifies a "pretty" human readable table.
+                            False specifies '|' as a separator with no padding
+
+    Returns:
+        None
+    """
+    if(totalWidth == 'none'):
+        totalWidth = sys.maxsize
+    elif(totalWidth == 'auto'):
+        totalWidth = shutil.get_terminal_size((80, 80))[0] # this is what jobstats uses but man is this a huge number
+    elif(totalWidth.isdigit()):
+        totalWidth = int(totalWidth)
+    else:
+        raise Exception("totalWidth = " + str(totalWidth))
+
+    # assuming that we always want to print all metrics
+    keys = ['rank', 'account', 'cores', 'memory', 'time', 'jobs', 'total']
+    headers = ["rank", "account", "cores", "memory", "time limit", "jobs", "total efficiency"]
+    maxLen = []
+    if totalWidth < 40:
+        totalWidth = 40 # ignoring requests of less than 40 units, you won't get a useful table
+    
+    for header in headers:
+        maxLen.append(len(header))
+    if not parsable:
+        if number == -1:
+            number = len(data)
+        # find longest cell for each column, update maxLen
+        i = 0
+        while i < number and i < len(data):
+            for j in range(len(keys)):
+                if(len(str(data[i][keys[j]])) > maxLen[j]):
+                    maxLen[j] = len(str(data[i][keys[j]]))
+            i += 1
+        # truncate longest row until your row width not longer exceeds max
+        while sum(maxLen) + len(maxLen) * 3 + 2 > totalWidth:
+            maxLen[maxLen.index(max(maxLen))] -= 1
+    fmtString = ''
+    for index, length in enumerate(maxLen):
+        fmtString += "{" + str(index) + ": <" + str(maxLen[index]) + "}"
+        if index < len(maxLen) - 1:
+            fmtString += ' ' * 3 # separator
+    headerString = None
+    if not parsable:
+        headerString = formatRow(fmtString, headers, maxLen)
+    else:
+        headerString = "|".join(headers)
+    print(headerString)
+    if not parsable:
+        print("=" * (len(headerString) + 2))
+
+    if number == -1:
+        number = len(data)
+    i = 0
+    while i < number and i < len(data):
+        statsDict = data[i]
+        statsList = [str(statsDict[key]) for key in keys]
+        if not parsable:
+            rowString = formatRow(fmtString, statsList, maxLen)
+        else:
+            rowString = "|".join(statsList)
+        print(rowString)
+        i += 1
+        
+def getTimeSlice(cursor, fromDate, toDate):
+    """
+    Desc: Retrieve job data from the database for the given time range
+
+    Args:
+        cursor (mysql.connector): Reuse a mysql connection instead of
+                                  initializing a new one
+        fromDate (string) (optional): Add a start date
+        toDate (string) (optional): Add an end date
+
+    Returns:
+        List with a dictionary for each unique username for the time slice.
+    """
+    data = dict()
+
+    query =  'SELECT username,memoryreq,memoryuse,idealcpu,cputime,tlimitreq,tlimituse,jobsum'
+    query += ' FROM jobs WHERE date >= %s AND date <= %s'
+
+    args = [fromDate, toDate]
+
+    cursor.execute(query, tuple(args))
+
+    # add together all stats for each unique user
+    for username, memory_req, memory_use, ideal_cpu, cpu_time, tlimit_req, tlimit_use, jobsum in cursor:
+        if username not in data:
+            data[username] = {'memory-req': memory_req if memory_req else 0,
+                              'memory-use': memory_use if memory_use else 0,
+                              'ideal-cpu' : ideal_cpu if ideal_cpu else 0,
+                              'cpu-time'  : cpu_time if cpu_time else 0,
+                              'tlimit-req': tlimit_req if tlimit_req else 0,
+                              'tlimit-use': tlimit_use if tlimit_use else 0,
+                              'jobs'      : jobsum if jobsum else 0}
+        else:
+            data[username]['memory-req'] += memory_req if memory_req else 0
+            data[username]['memory-use'] += memory_use if memory_use else 0
+            data[username]['ideal-cpu']  += ideal_cpu if ideal_cpu else 0
+            data[username]['cpu-time']   += cpu_time if cpu_time else 0
+            data[username]['tlimit-req'] += tlimit_req if tlimit_req else 0
+            data[username]['tlimit-use'] += tlimit_use if tlimit_use else 0
+            data[username]['jobs']       += jobsum if jobsum else 0
+
+    result = []
+    for username in data:
+        # doppler refers to cpu effiency as "cores" efficiency
+        # replace 0 eff values with '-' in output
+        # 0 eff values mean the job failed
+        core_req = data[username]['ideal-cpu'];
+        core_used = data[username]['cpu-time'];
+        core_eff = 100 * core_used / core_req if core_req != 0 else 0.0
+
+        memory_req = data[username]['memory-req']
+        memory_used = data[username]['memory-use']
+        memory_eff = 100 * memory_used / memory_req if memory_req != 0 else 0.0
+
+        time_req = data[username]['tlimit-req']
+        time_used = data[username]['tlimit-use']
+        time_eff = 100 * time_used / time_req if time_req != 0 else 0.0
+
+        if core_used == 0 and core_req == 0: # should only be True in single-core case
+            core_eff = time_eff
+        
+        total_eff = (core_eff + memory_eff + time_eff) / 3
+        result.append({'account': username,
+                       'cores'  : round(core_eff, 2),
+                       'memory' : round(memory_eff, 2),
+                       'time'   : round(time_eff, 2),
+                       'jobs'   : data[username]['jobs'],
+                       'total'  : round(total_eff, 2)})
+
+    return result # returning a list to be sorted later
+    
+def main():
+    parser = argparse.ArgumentParser(description="Get user efficiency statistics")
+    parser.add_argument("-e", "--metric", type=str,
+                        choices=['cores', 'memory', 'time', 'total', 'jobs'],
+                        default='total', help="metric to sort by")
+    parser.add_argument("-w", "--weekly", action="store_true",
+                        help="select weekly time interval (default)")
+    parser.add_argument("-m", "--monthly", action="store_true",
+                        help="select monthly time interval")
+    parser.add_argument("-q", "--quarterly", action="store_true",
+                        help="select quarterly time interval")
+    parser.add_argument("-a", "--ascending", action="store_true",
+                        help="sort by metric in ascending order instead of the default descending order")
+    parser.add_argument("-p", "--parsable", action="store_true",
+                        help="make output parsable")
+    parser.add_argument("-c", "--col-size", type=str,
+                        help="set the column size (<int>, none, or auto (default))")
+    parser.add_argument("-n", "--number", type=int, default=10,
+                        help="the number of rows in table output")
+    parser.add_argument("-A", "--all-rows", action="store_true",
+                        help="include all rows in output")
+
+    args = parser.parse_args()
+    
+    # Read in config args
+    config = configparser.ConfigParser()
+
+    # Attempt to read from the local directory
+    configFilePath = (os.path.dirname(__file__) + str('/jobstats-config.ini'))
+
+    config.read(configFilePath)
+    
+    # If config file is not in local directory, check resource directory
+    if not 'DEFAULTS' in config:
+        config.read_string(pkg_resources.resource_string(
+            'jobstats',
+            'jobstats-config.ini').decode('utf-8')
+        )
+
+    SHOW_JOB_CHILDREN  = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True'
+    DB_USER = config['DEFAULTS']['DB_USER']
+    DB_DB   = config['DEFAULTS']['DB_DB']
+    DB_PASS = config['DEFAULTS']['DB_PASS']
+    DB_HOST = config['DEFAULTS']['DB_HOST']
+    
+    try:
+        cnx = mysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, db=DB_DB)
+    except:
+        print('Error: No connection to database')
+        exit()
+
+
+    start_date = (datetime.datetime.today() + relativedelta(days=-7)).strftime('%Y%m%d')
+    if(args.monthly):
+        start_date = (datetime.datetime.today() + relativedelta(days=-31)).strftime('%Y%m%d')
+    elif(args.quarterly):
+        start_date = (datetime.datetime.today() + relativedelta(days=-100)).strftime('%Y%m%d')
+    end_date = (datetime.datetime.today() + relativedelta(days=0)).strftime('%Y%m%d')
+
+    cursor = cnx.cursor()
+    data = getTimeSlice(cursor, start_date, end_date)
+
+    data.sort(key=lambda x: x['total'], reverse=True)
+    for i in range(len(data)): # rank is always based on total efficiency
+        # negating rank because unlike other metrics lower rank is good
+        data[i]['rank'] = -1 * (i + 1)
+
+    # using -1 * rank as a tie breaker
+    data.sort(key=operator.itemgetter(args.metric, 'rank'), reverse=not args.ascending)
+
+    # un-negating rank again
+    for i in range(len(data)):
+        data[i]['rank'] = -1 * data[i]['rank']
+
+    COLUMN_MAX         = config['DEFAULTS']['COLUMN_MAX']
+    if(args.col_size is not None):
+        COLUMN_MAX = args.col_size
+    fields = ["rank", "account", "cores", "memory", "time limit", "jobs", "total efficiency"]
+    if args.all_rows == False:
+        createTable(fields, data, COLUMN_MAX, args.number, args.parsable)
+    else:
+        createTable(fields, data, COLUMN_MAX, -1, args.parsable)
+
+if __name__ == '__main__':
+    main()
