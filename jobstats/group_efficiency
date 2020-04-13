@@ -288,8 +288,8 @@ def main():
     THRESHOLD        = 100    
     ACCOUNT_NUM      = 0
     SORTFLAG         = 0
-    POSSIBLE_DATE_FORMATS = ['%m/%d/%Y', '%m/%d/%y', '%m%d%y', '%m%d%Y', '%Y-%m-%d', '%m.%d.%Y', '%Y/%m/%d', '%y/%m/%d']
-
+    POSSIBLE_DATE_FORMATS = ['%m/%d/%Y', '%m/%d/%y', '%m%d%y', '%m%d%Y', '%Y-%m-%d', '%m.%d.%Y', '%Y/%m/%d', '%y/%m/%d','%Y%m%d']
+    data             = []
     if '--no-color' in sys.argv:
         NO_COLOR = True
         sys.argv.remove('--no-color')
@@ -304,7 +304,7 @@ def main():
                 break # if correct format, don't test any other formats
             except ValueError:
                 pass # if incorrect format, keep trying other formats
-        START_DATE=datetime.datetime.strptime(str(parsed_date), '%Y-%m-%d').strftime('%m/%d/%y')
+        START_DATE=datetime.datetime.strptime(str(parsed_date), '%Y-%m-%d').strftime('%Y%m%d')
       
 
 
@@ -318,7 +318,7 @@ def main():
                 break # if correct format, don't test any other formats
             except ValueError:
                 pass # if incorrect format, keep trying other formats
-        END_DATE=datetime.datetime.strptime(str(parsed_date), '%Y-%m-%d').strftime('%m/%d/%y')  
+        END_DATE=datetime.datetime.strptime(str(parsed_date), '%Y-%m-%d').strftime('%Y%m%d')  
 
     if  '-W' in sys.argv:
         sys.argv.remove('-W')    
@@ -336,49 +336,90 @@ def main():
     if '--parseable' in sys.argv:
         PARSEABLE = True
         sys.argv.remove('--parseable')
+
+    if '-p' in sys.argv:
+        PARSEABLE = True
+        sys.argv.remove('-p')
+    
     if '--show-empty' in sys.argv:
         SHOW_EMPTY_USERS = True
         sys.argv.remove('--show-empty')
 
+    if '-e' in sys.argv:
+        SHOW_EMPTY_USERS = True
+        sys.argv.remove('-e')
+
     if '--all-accounts' in sys.argv:
         ALL_ACCOUNTS = True
         sys.argv.remove('--all-accounts')
-  
+
+    if '-a' in sys.argv:
+        ALL_ACCOUNTS = True
+        sys.argv.remove('-a')
+
     if '--threshold' in sys.argv:
         THRESHOLD = sys.argv[sys.argv.index('--threshold') + 1]
         sys.argv.remove('--threshold')
         sys.argv.remove(THRESHOLD)
+
+    if '-t' in sys.argv:
+       THRESHOLD = sys.argv[sys.argv.index('-t') + 1]
+       sys.argv.remove('-t')
+       sys.argv.remove(THRESHOLD)
+
     if '--number' in sys.argv:
         ACCOUNT_NUM = sys.argv[sys.argv.index('--number') + 1]
         sys.argv.remove('--number')
         sys.argv.remove(ACCOUNT_NUM)
+
+    if '-n' in sys.argv:
+       ACCOUNT_NUM = sys.argv[sys.argv.index('-n') + 1]
+       sys.argv.remove('-n')
+       sys.argv.remove(ACCOUNT_NUM)
+
+
     if '--memory' in sys.argv:
         SORTFLAG = 1
+        sys.argv.remove('--memory')    
+
+    if '-m' in sys.argv:
+        SORTFLAG = 1
+        sys.argv.remove('-m')
+
     if '--cores' in sys.argv:
         SORTFLAG = 2
+        sys.argv.remove('--cores')
+
+    if '-c' in sys.argv:
+        SORTFLAG = 2
+        sys.argv.remove('-c')
+
     if '--time' in sys.argv:
         SORTFLAG = 3
+        sys.argv.remove('--time')
         
-
+    if '-t' in sys.argv: 
+        SORTFLAG = 3
+        sys.argv.remove('-t')
 
 
     if not ALL_ACCOUNTS and (len(sys.argv) == 1 or '--help' in sys.argv or '-h' in sys.argv):
         print('Usage: ', sys.argv[0].split('/')[-1], ' [ACCOUNT] [OPTION]...')
         print('Show usage statistics for a slurm account and it\'s users')
-        print('\n  --show-empty    show slurm users with no jobs')
-        print('  --parseable     make output parseable')
-        print('  -S X            show stats for jobs since some date')
-        print('  -E X            show stats for jobs up to some date')
-        print('  -W              show stats for jobs for the past week' )
-        print('  -M              show stats for jobs for the past month' )
-        print('  -Q              show stats for jobs for the past quarter' )
-        print('  --all-accounts  run for all accounts on slurm')
-        print('  --threshold     shows stats below a specified total')
-        print('  --number        shows the top accounts')
-        print('  --memory        sorts the table by the memory')
-        print('  --cores         sorts the table by the cores')
-        print('  --time          sorts the table by the time')
-        print('  --no-color      do not colorize stats')
+        print('\n  --show-empty -e    show slurm users with no jobs')
+        print('  --parseable          make output parseable')
+        print('  -S X                 show stats for jobs since some date')
+        print('  -E X                 show stats for jobs up to some date')
+        print('  -W                   show stats for jobs for the past week' )
+        print('  -M                   show stats for jobs for the past month' )
+        print('  -Q                   show stats for jobs for the past quarter' )
+        print('  --all-accounts  -a   run for all accounts on slurm')
+        print('  --threshold  -t      shows stats below a specified total')
+        print('  --number  -n         shows the top accounts')
+        print('  --memory  -m         sorts the table by the memory')
+        print('  --cores  -c          sorts the table by the cores')
+        print('  --time  -t           sorts the table by the time')
+        print('  --no-color           do not colorize stats')
         print('\nGot bugs? Report to hpcsupport@nau.edu')
         exit()
 
@@ -556,7 +597,6 @@ def main():
             key=str(key)+field1
             tuples.update({key:(field1,field2,field3,field4,field5)})
         sortedlist=sorted(tuples.items(),key=operator.itemgetter(0),reverse=True)
-        data=[]
         
         #take sorted list from dictionary and put them into a list
         for elem in sortedlist:
@@ -626,6 +666,7 @@ def main():
                 userStatsString = ''
                 
                 totalGrades = [stats['users'][user][i] if stats['users'][user][i] else '-' for i in stats['users'][user] ] 
+
                 total = '-'
 
                 total = str(round(statistics.mean([stats['users'][user][i] for i in stats['users'][user] if stats['users'][user][i]]), 2))
