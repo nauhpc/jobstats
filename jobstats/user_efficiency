@@ -47,12 +47,11 @@ def formatRow(fmtString, strList, maxLen):
     return fmtString.format(strList[0], strList[1], strList[2], strList[3],
                             strList[4], strList[5], strList[6])
 
-def createTable(fields, data, totalWidth, number, parsable):
+def createTable(data, totalWidth, number, parsable):
     """
     Desc: Print a table with job efficiency information
 
     Args:
-        fields (list of strings): list of keys to extract from the data dict, order matters
         data (dict): a dictionary where each key is a unique uid, values are efficiency info
         totalWidth (string): specifies max length of each row when parsable is False
         number (int): Maximum number of rows to display in table, -1 specifies all
@@ -72,8 +71,8 @@ def createTable(fields, data, totalWidth, number, parsable):
         raise Exception("totalWidth = " + str(totalWidth))
 
     # assuming that we always want to print all metrics
-    keys = ['rank', 'account', 'cores', 'memory', 'time', 'jobs', 'total']
-    headers = ["rank", "account", "cores", "memory", "time limit", "jobs", "total efficiency"]
+    keys = ['rank', 'account', 'cores', 'memory', 'time', 'cpuhours', 'total']
+    headers = ["rank", "account", "cores", "memory", "time limit", "cpuhours", "total efficiency"]
     maxLen = []
     if totalWidth < 40:
         totalWidth = 40 # ignoring requests of less than 40 units, you won't get a useful table
@@ -135,7 +134,7 @@ def getTimeSlice(cursor, fromDate, toDate):
     """
     data = dict()
 
-    query =  'SELECT username,memoryreq,memoryuse,idealcpu,cputime,tlimitreq,tlimituse,jobsum'
+    query =  'SELECT username,memoryreq,memoryuse,idealcpu,cputime,tlimitreq,tlimituse'
     query += ' FROM jobs WHERE date >= %s AND date <= %s'
 
     args = [fromDate, toDate]
@@ -143,15 +142,14 @@ def getTimeSlice(cursor, fromDate, toDate):
     cursor.execute(query, tuple(args))
 
     # add together all stats for each unique user
-    for username, memory_req, memory_use, ideal_cpu, cpu_time, tlimit_req, tlimit_use, jobsum in cursor:
+    for username, memory_req, memory_use, ideal_cpu, cpu_time, tlimit_req, tlimit_use in cursor:
         if username not in data:
             data[username] = {'memory-req': memory_req if memory_req else 0,
                               'memory-use': memory_use if memory_use else 0,
                               'ideal-cpu' : ideal_cpu if ideal_cpu else 0,
                               'cpu-time'  : cpu_time if cpu_time else 0,
                               'tlimit-req': tlimit_req if tlimit_req else 0,
-                              'tlimit-use': tlimit_use if tlimit_use else 0,
-                              'jobs'      : jobsum if jobsum else 0}
+                              'tlimit-use': tlimit_use if tlimit_use else 0}
         else:
             data[username]['memory-req'] += memory_req if memory_req else 0
             data[username]['memory-use'] += memory_use if memory_use else 0
@@ -159,13 +157,13 @@ def getTimeSlice(cursor, fromDate, toDate):
             data[username]['cpu-time']   += cpu_time if cpu_time else 0
             data[username]['tlimit-req'] += tlimit_req if tlimit_req else 0
             data[username]['tlimit-use'] += tlimit_use if tlimit_use else 0
-            data[username]['jobs']       += jobsum if jobsum else 0
 
     result = []
     for username in data:
         # doppler refers to cpu effiency as "cores" efficiency
         # replace 0 eff values with '-' in output
         # 0 eff values mean the job failed
+        
         core_req = data[username]['ideal-cpu'];
         core_used = data[username]['cpu-time'];
         core_eff = 100 * core_used / core_req if core_req != 0 else 0.0
@@ -178,23 +176,28 @@ def getTimeSlice(cursor, fromDate, toDate):
         time_used = data[username]['tlimit-use']
         time_eff = 100 * time_used / time_req if time_req != 0 else 0.0
 
+        cpuhours = None
+        
         if core_used == 0 and core_req == 0: # should only be True in single-core case
             core_eff = time_eff
-        
+            cpuhours = float(data[username]['tlimit-use']) / 3600
+        else:
+            cpuhours = float(data[username]['cpu-time']) / 3600
+
         total_eff = (core_eff + memory_eff + time_eff) / 3
-        result.append({'account': username,
-                       'cores'  : round(core_eff, 2),
-                       'memory' : round(memory_eff, 2),
-                       'time'   : round(time_eff, 2),
-                       'jobs'   : data[username]['jobs'],
-                       'total'  : round(total_eff, 2)})
+        result.append({'account'  : username,
+                       'cores'    : round(core_eff, 2),
+                       'memory'   : round(memory_eff, 2),
+                       'time'     : round(time_eff, 2),
+                       'cpuhours' : round(cpuhours, 2),
+                       'total'    : round(total_eff, 2)})
 
     return result # returning a list to be sorted later
     
 def main():
     parser = argparse.ArgumentParser(description="Get user efficiency statistics")
     parser.add_argument("-e", "--metric", type=str,
-                        choices=['cores', 'memory', 'time', 'total', 'jobs'],
+                        choices=['cores', 'memory', 'time', 'total', 'cpuhours'],
                         default='total', help="metric to sort by")
     parser.add_argument("-w", "--weekly", action="store_true",
                         help="select weekly time interval (default)")
@@ -268,11 +271,10 @@ def main():
     COLUMN_MAX         = config['DEFAULTS']['COLUMN_MAX']
     if(args.col_size is not None):
         COLUMN_MAX = args.col_size
-    fields = ["rank", "account", "cores", "memory", "time limit", "jobs", "total efficiency"]
     if args.all_rows == False:
-        createTable(fields, data, COLUMN_MAX, args.number, args.parsable)
+        createTable(data, COLUMN_MAX, args.number, args.parsable)
     else:
-        createTable(fields, data, COLUMN_MAX, -1, args.parsable)
+        createTable(data, COLUMN_MAX, -1, args.parsable)
 
 if __name__ == '__main__':
     main()
