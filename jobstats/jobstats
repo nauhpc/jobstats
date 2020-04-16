@@ -414,6 +414,9 @@ def main():
         jobEfficiency = [None, None, None]  # Mem, cpu, time
         jobString = ''
 
+        if i[3] is None: # maxRSS may be None while job is executing
+            i[3] = '0'
+
         for valIndex, valString in enumerate(i):
             # Attempt to assess quality of the current value
             rating = ''
