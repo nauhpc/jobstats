@@ -471,6 +471,7 @@ def main():
     
     cursor = cnx.cursor()
 
+    data = []
     if ALL_ACCOUNTS:
         accounts = getSlurmAccounts()
         group_efficiency=""
@@ -731,7 +732,6 @@ def main():
                 key+=100
                 tuples.update({key:(field1,field2,field3,field4,field5)})
             sortedlist=sorted(tuples.items(),key=operator.itemgetter(0),reverse=True)
-            data=[]
             for elem in sortedlist:
                 
                 elem=list(elem)
