@@ -21,7 +21,14 @@ import argparse
 import subprocess
 import operator
 
-# have the width of each column match it's widest cell
+def filterByCoreHours(data, coreHoursReq, number):
+    result = []
+    data.sort(key=lambda x: x['core hours'], reverse=True)
+    for i in range(len(data)):
+        if i <= number or data[i]['core hours'] >= coreHoursReq:
+            result.append(data[i])
+    return result
+        
 
 def formatRow(fmtString, strList, maxLen):
     """
@@ -126,7 +133,7 @@ def createTable(data, totalWidth, number, parsable):
         print(rowString)
         i += 1
         
-def getTimeSlice(cursor, fromDate, toDate):
+def getTimeSlice(cursor, fromDate, toDate, username=None):
     """
     Desc: Retrieve job data from the database for the given time range
 
@@ -145,6 +152,10 @@ def getTimeSlice(cursor, fromDate, toDate):
     query += ' FROM jobs WHERE date >= %s AND date <= %s'
 
     args = [fromDate, toDate]
+    
+    if username is not None:
+        query += ' AND username = %s'
+        args.append(username)
 
     cursor.execute(query, tuple(args))
 
@@ -216,9 +227,15 @@ def main():
                         help="the number of rows in table output")
     parser.add_argument("-A", "--all-rows", action="store_true",
                         help="include all rows in output")
-
+    parser.add_argument("-d", "--disable-core-hours-filter",
+                        action="store_true",
+                        help="Show all user rows instead of ignoring " +
+                        "those that don't meet the core hours requirement")
+    parser.add_argument("-u", "--username", type=str,
+                        help="will show the user efficiency stats for " +
+                        "selected username")
     args = parser.parse_args()
-    
+
     # Read in config args
     config = configparser.ConfigParser()
 
@@ -234,12 +251,15 @@ def main():
             'jobstats-config.ini').decode('utf-8')
         )
 
-    SHOW_JOB_CHILDREN  = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True'
     DB_USER = config['DEFAULTS']['DB_USER']
     DB_DB   = config['DEFAULTS']['DB_DB']
     DB_PASS = config['DEFAULTS']['DB_PASS']
     DB_HOST = config['DEFAULTS']['DB_HOST']
-    
+    try:
+        USER_CORE_HOURS_REQ = int(config['DEFAULTS']['USER_CORE_HOURS_REQ'])
+    except:
+        USER_CORE_HOURS_REQ = 1000
+
     try:
         cnx = mysql.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, db=DB_DB)
     except:
@@ -255,7 +275,9 @@ def main():
     end_date = (datetime.datetime.today() + relativedelta(days=0)).strftime('%Y%m%d')
 
     cursor = cnx.cursor()
-    data = getTimeSlice(cursor, start_date, end_date)
+    data = getTimeSlice(cursor, start_date, end_date, args.username)
+    if not args.disable_core_hours_filter:
+        data = filterByCoreHours(data, USER_CORE_HOURS_REQ, args.number)
 
     data.sort(key=lambda x: x['total'], reverse=True)
 
