@@ -3,6 +3,23 @@
 ## Overview 
 Provides a toolkit of scripts to easily view and pipe data on a user or account's resource usage data from Slurm's `sacct` tool.
 
+## Usage
+```
+Usage:  jobstats  [OPTION]...
+Show usage statistics for past slurm jobs
+
+  -A                   run jobstats on an entire account
+  -S                   show jobs since start date (format m/d/yy)
+  -r, --show-running   show running jobs
+  -p, --parsable       make output parseable
+  -c, --no-color       do not print colored stats
+  -s, --no-size-limit  ignore dynamic terminal size limits
+  -G, --gpu-stats      show gpu hours and gpu efficiency
+  All other arguments in 'sacct' are accepted
+
+Got bugs? Report to hpcsupport@nau.edu
+```
+
 ## Installation
 
 ### Requirements
