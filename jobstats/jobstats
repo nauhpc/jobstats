@@ -19,7 +19,7 @@ import statistics    # Calculating median
 import shlex         # Ensure strings sent to bash are properly escaped
 import os            # Path info
 import pkg_resources # Read from package directory
-
+import json          # Parse gpuinfo from each Comment
 
 class Colors:
     GREEN   = '\033[92m'
@@ -44,8 +44,8 @@ def getJobStats(extraArgs=None):
         List of lists of the form [[jobID, jobName, reqMem, maxRSS, reqCPU,
                                     cpuTime, elapsed, elapsed], ...].
     """
-    formatString = ' jobid,jobname,reqmem,maxrss,reqcpus,usercpu,timelimit'
-    formatString += ',elapsed,state'
+    formatString = ' jobid,jobname,reqmem,maxrss,reqcpus,usercpu,comment,'
+    formatString += 'comment,timelimit,elapsed,state'
 
     if '-A' in extraArgs and '-u' not in extraArgs:
         formatString += ',user'
@@ -69,10 +69,15 @@ def getJobStats(extraArgs=None):
     out = out[1].split('\n')
 
     jobs = []
+    count = 0
     for row in out:
         row = row.split('|')
         row = ['-' if x == '' else x for x in row]
         jobs.append(row)
+        if count == 0:
+            row[6] = 'ReqGPUS'
+            row[7] = 'UserGPU'
+        count += 1
 
     return jobs
 
@@ -180,7 +185,10 @@ def main():
                          ['GRADE_INCREMENT_RAM'].split(',')]
     
     GRADE_SCALE_CPU    = [float(x) for x in config['DEFAULTS']
-                         ['GRADE_INCREMENT_CPU'].split(',')]   
+                         ['GRADE_INCREMENT_CPU'].split(',')]
+
+    GRADE_SCALE_GPU    = [float(x) for x in config['DEFAULTS']
+                          ['GRADE_INCREMENT_GPU'].split(',')]
     
     # Args controlled by flags
     OVERRIDE_COLUMN_SIZE = False
@@ -188,6 +196,7 @@ def main():
     SHOW_RUNNING_JOBS    = False
     PARSEABLE            = False
     NO_COLOR             = False
+    GPU_STATS            = False
 
     # Process flags and args
     if '--col-size' in sys.argv:
@@ -233,6 +242,14 @@ def main():
         except:
             sys.argv.remove('-r')
 
+    if '--gpu-stats' in sys.argv or '-G' in sys.argv:
+        GPU_STATS = True
+        try:
+            sys.argv.remove('--gpu-stats')
+
+        except:
+            sys.argv.remove('-G')
+
     if COLUMN_MAX == 'auto':
         COLUMN_MAX = shutil.get_terminal_size((80, 80))[0]
     
@@ -242,19 +259,21 @@ def main():
     if IGNORE_COLUMN_SIZE:
         COLUMN_MAX = sys.maxsize
 
-    jobs = getJobStats(extraArgs=' '.join(sys.argv[1::]))
-
-    err = False
-    # Make sure the sacct call didn't throw an error
-    if jobs[0][0] == '-' or len(jobs[0]) == 1:
-        if PARSEABLE:
-            exit()
-
-        print("Sacct error: ", jobs[0][0])
-        err = True
+    HELP_FLAG = False
+    if '-h' in sys.argv or '--help' in sys.argv:
+        HELP_FLAG = True
+    else:
+        jobs = getJobStats(extraArgs=' '.join(sys.argv[1::]))
+        err = False
+        # Make sure the sacct call didn't throw an error
+        if jobs[0][0] == '-' or len(jobs[0]) == 1:
+            if PARSEABLE:
+                exit()
+            print("Sacct error: ", jobs[0][0])
+            err = True
 
     # Print help message
-    if '-h' in sys.argv or '--help' in sys.argv or err:
+    if HELP_FLAG or err:
         print('Usage: ', sys.argv[0].split('/')[-1], ' [OPTION]...')
         print('Show usage statistics for past slurm jobs')
         print('\n  -A                   run jobstats on an entire account')
@@ -263,6 +282,7 @@ def main():
         print('  -p, --parsable       make output parseable')
         print('  -c, --no-color       do not print colored stats')
         print('  -s, --no-size-limit  ignore dynamic terminal size limits')
+        print('  -G, --gpu-stats      show gpu hours and gpu efficiency')
         print('  All other arguments in \'sacct\' are accepted')
         print('\nGot bugs? Report to hpcsupport@nau.edu')
         exit()
@@ -290,13 +310,17 @@ def main():
     labelString = ''    
 
     for index, i in enumerate(labels):
+        if index == 9 and not GPU_STATS:
+            # we are omitting GPUHours in the output
+            continue
+
         if PARSEABLE:
             labelString += i
-       
+
         elif len(i) > maxLen[index]:
             labelString += i[:maxLen[index]-1] + '+'
             spaceLeft = 0
-        
+
         else:
             labelString += i
             spaceLeft = maxLen[index] - len(i)
@@ -304,8 +328,8 @@ def main():
         if PARSEABLE:
             if i != labels[-1]:
                 labelString += '|'
-        
-        else:    
+
+        else:
             if i != labels[-1]:
                 labelString += ' ' * spaceLeft + '   '
             
@@ -321,14 +345,17 @@ def main():
     jobs = jobs[1::] 
     
     # Get the calculatable label positions
-    calcRAM    = labels.index('ReqMem') 
-    calcCPU    = labels.index('ReqCPUS')
-    calcTLimit = labels.index('Timelimit')
+    calcRAM     = labels.index('ReqMem') 
+    calcCPU     = labels.index('ReqCPUS')
+    calcTLimit  = labels.index('Timelimit')
+    calcReqGPUS = labels.index('ReqGPUS')
+    calcUserGPU = labels.index('UserGPU')
 
     # Store [usage, allocated]
     memoryStats = [0, 0]
     cpuStats    = [0, 0]
     tLimitStats = [0, 0]
+    gpuStats    = [0, 0]
 
     # Prune cancelled and pending jobs
     jobs = [i for i in jobs if 'CANCELLED' not in i[8] 
@@ -411,24 +438,37 @@ def main():
             i[5] = runningStats[0]
 
         # Build each job string and print 
-        jobEfficiency = [None, None, None]  # Mem, cpu, time
+        jobEfficiency = [None, None, None, None]  # Mem, cpu, time, gpu
         jobString = ''
 
         if i[3] is None: # maxRSS may be None while job is executing
             i[3] = '0'
 
+        # Next two try-excepts are for the Comment field
+        try:
+            json.loads(i[6])
+        except:
+            i[6] = '-' # should not occur
+
+        try:
+            json.loads(i[7])
+        except:
+            i[7] = '-' # should not occur            
+
         for valIndex, valString in enumerate(i):
             # Attempt to assess quality of the current value
             rating = ''
 
-            jobID     = i[0]
-            reqMem    = i[2]
-            maxRSS    = i[3]
-            reqCPUs   = i[4]
-            userCPU   = i[5]
-            timeLimit = i[6]
-            elapsed   = i[7]
-            state     = i[8]
+            jobID        = i[0]
+            reqMem       = i[2]
+            maxRSS       = i[3]
+            reqCPUs      = i[4]
+            userCPU      = i[5]
+            reqGPUs      = i[6]
+            userGPU      = i[7]
+            timeLimit    = i[8]
+            elapsed      = i[9]
+            state        = i[10]
            
             usageByCore = False
             if 'c' in reqMem:
@@ -472,6 +512,8 @@ def main():
                 if reqMem != 0:
                     usage = (maxRSS / reqMem * MEMORY_WEIGHT)
                     jobEfficiency[0] = usage
+                else:
+                    usage = 0.0
 
                 if not NO_COLOR:
                     if usage < GRADE_SCALE_MEMORY[0]:
@@ -553,7 +595,49 @@ def main():
 
                     tLimitStats[0] += elapsed
                     tLimitStats[1] += timeLimit
-     
+            elif valIndex == calcReqGPUS and len(reqGPUs) > 1 and \
+                 '-' not in [elapsed]:
+                timeLimit = timeStringToSeconds(timeLimit)
+                gpuinfo = json.loads(userGPU)
+                # The "UserGPU" is the average %-gpu used * mins * ngpu * 60
+                gpuhours = gpuinfo['gpu_util'] * gpuinfo['step'] * \
+                    gpuinfo['ngpu'] * 60.0 / 100.0
+                gpureq = timeLimit * gpuinfo['ngpu']
+                gpuStats[0] += gpuhours
+                gpuStats[1] += gpureq
+                usage = gpuhours / gpureq
+                jobEfficiency[3] = usage
+                if not NO_COLOR:
+                    if usage < GRADE_SCALE_GPU[0]:
+                        rating = Colors.RED
+                    elif usage < GRADE_SCALE_GPU[1]:
+                        rating = Colors.YELLOW
+                    else:
+                        rating = Colors.GREEN                
+            elif valIndex == calcUserGPU and len(userGPU) > 1 and \
+                 '-' not in [elapsed]:
+                timeLimit = timeStringToSeconds(timeLimit)
+                gpuinfo = json.loads(userGPU)
+                # The "UserGPU" is the average %-gpu used * mins * ngpu * 60
+                gpuhours = gpuinfo['gpu_util'] * gpuinfo['step'] * \
+                    gpuinfo['ngpu'] * 60.0 / 100.0
+                gpureq = timeLimit * gpuinfo['ngpu']                
+                gpuStats[0] += gpuhours
+                gpuStats[1] += gpureq
+                usage = gpuhours / gpureq
+                jobEfficiency[3] = usage
+                if not NO_COLOR:
+                    if usage < GRADE_SCALE_GPU[0]:
+                        rating = Colors.RED
+                    elif usage < GRADE_SCALE_GPU[1]:
+                        rating = Colors.YELLOW
+                    else:
+                        rating = Colors.GREEN
+
+            if (valIndex == calcReqGPUS or valIndex == calcUserGPU) and not GPU_STATS:
+                # we will still use the gpuinfo when calculating the efficiency
+                continue
+
             # Finish building the string for the job row
             # If the column value length > max length for column, truncate it
             if not PARSEABLE:
@@ -574,11 +658,16 @@ def main():
                         if valString[-2] == '.':
                             valString = valString.replace('.', '')
 
-
                     else:
                         valInGigs = float(valString) / (pow(2,10))
                         valString = str("{0:0.2f}".format(valInGigs))
                         valString = valString[:4] + 'G'
+                elif valIndex == calcReqGPUS and valString != '-':
+                    valString = str(gpuinfo['ngpu'])
+                elif valIndex == calcUserGPU and valString != '-':
+                    gpuinfo = json.loads(valString)
+                    valString = str(gpuinfo['gpu_util'] * gpuinfo['step'] * \
+                                    gpuinfo['ngpu'] / (60.0 * 100.0))
 
                 if NO_COLOR:
                     rating = ''
@@ -586,14 +675,13 @@ def main():
                 if len(valString) > maxLen[valIndex]:
                     jobString += rating + valString[:maxLen[valIndex]-1] + '+'
                     spaceLeft = 0
-            
+
                 else:
                     jobString += rating + valString 
                     spaceLeft = maxLen[valIndex] - len(valString)
 
                 if not NO_COLOR:
                     jobString += Colors.END
-
 
                 jobString += ' ' * spaceLeft + '   '
                 
@@ -642,7 +730,7 @@ def main():
 
     # Print job stats grades
     grades = []
-    showTips = [False, False, False]
+    # showTips = [False, False, False]
 
     if memoryStats[1] == 0:
         gradeMemory = '-'
@@ -659,6 +747,14 @@ def main():
         gradeCPU = round(cpuStats[0] / cpuStats[1] * 100, 2)
         grades.append(gradeCPU)
         gradeCPU = str("%.2f" % gradeCPU).zfill(5) + '%'
+
+    if gpuStats[1] == 0:
+        gradeGPU = '-'
+    
+    else:
+        gradeGPU = round(gpuStats[0] / gpuStats[1] * 100, 2)
+        grades.append(gradeGPU)
+        gradeGPU = str("%.2f" % gradeGPU).zfill(5) + '%'
  
     if tLimitStats[1] == 0:
         gradeTLimit = '-'
@@ -673,7 +769,8 @@ def main():
         stats = 'STATS'
         stats += '|' + gradeMemory 
         stats += '|' + gradeCPU   
-        stats += '|' + gradeTLimit 
+        stats += '|' + gradeTLimit
+        stats += '|' + gradeGPU
         
         try:
             stats += '|' + str(round(statistics.mean(grades), 2))
@@ -684,19 +781,21 @@ def main():
         print(stats)
     
     else:
-        statsMemLine    = 'Requested Memory: ' + gradeMemory
-        statsCPULine    = 'Requested Cores : ' + gradeCPU
-        statsTLimitLine = 'Time Limit      : ' + gradeTLimit      
+        statsMemLine    = 'Memory     : ' + gradeMemory
+        statsCPULine    = 'Cores      : ' + gradeCPU
+        statsTLimitLine = 'Time Limit : ' + gradeTLimit
+        statsGPULine    = 'GPU        : ' + gradeGPU
         
         print(statsMemLine)
         print(statsCPULine)
         print(statsTLimitLine)
+        print(statsGPULine)
         
         score = 'Efficiency Score: '
         
         try:
             score += str(round(statistics.mean(grades), 2))
-        
+
         except:
             score += '-'
 
