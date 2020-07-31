@@ -30,7 +30,7 @@ class Colors:
     END     = '\033[0m'
 
 
-def getJobStats(extraArgs=None):
+def getJobStats(extraArgs=None, gpu_stats=False):
     """
     Desc: Get the parsed output of 'jobstats'=
           ('sacct --units=M -o jobid,jobname,reqmem,maxrss,reqcpus,usercpu,
@@ -44,8 +44,12 @@ def getJobStats(extraArgs=None):
         List of lists of the form [[jobID, jobName, reqMem, maxRSS, reqCPU,
                                     cpuTime, elapsed, elapsed], ...].
     """
-    formatString = ' jobid,jobname,reqmem,maxrss,reqcpus,usercpu,comment,'
-    formatString += 'comment,timelimit,elapsed,state'
+    if gpu_stats:
+        formatString = ' jobid,jobname,reqmem,maxrss,reqcpus,usercpu,comment,'
+        formatString += 'comment,timelimit,elapsed,state'
+    else:
+        formatString = ' jobid,jobname,reqmem,maxrss,reqcpus,usercpu,'
+        formatString += 'timelimit,elapsed,state'
 
     if '-A' in extraArgs and '-u' not in extraArgs:
         formatString += ',user'
@@ -74,7 +78,7 @@ def getJobStats(extraArgs=None):
         row = row.split('|')
         row = ['-' if x == '' else x for x in row]
         jobs.append(row)
-        if count == 0:
+        if count == 0 and gpu_stats:
             row[6] = 'ReqGPUS'
             row[7] = 'UserGPU'
         count += 1
@@ -263,7 +267,7 @@ def main():
     if '-h' in sys.argv or '--help' in sys.argv:
         HELP_FLAG = True
     else:
-        jobs = getJobStats(extraArgs=' '.join(sys.argv[1::]))
+        jobs = getJobStats(extraArgs=' '.join(sys.argv[1::]), gpu_stats=GPU_STATS)
         err = False
         # Make sure the sacct call didn't throw an error
         if jobs[0][0] == '-' or len(jobs[0]) == 1:
@@ -310,10 +314,6 @@ def main():
     labelString = ''    
 
     for index, i in enumerate(labels):
-        if index == 9 and not GPU_STATS:
-            # we are omitting GPUHours in the output
-            continue
-
         if PARSEABLE:
             labelString += i
 
@@ -348,8 +348,12 @@ def main():
     calcRAM     = labels.index('ReqMem') 
     calcCPU     = labels.index('ReqCPUS')
     calcTLimit  = labels.index('Timelimit')
-    calcReqGPUS = labels.index('ReqGPUS')
-    calcUserGPU = labels.index('UserGPU')
+    try:
+        calcReqGPUS = labels.index('ReqGPUS')
+        calcUserGPU = labels.index('UserGPU')
+    except:
+        calcReqGPUS = None
+        calcUserGPU = None
 
     # Store [usage, allocated]
     memoryStats = [0, 0]
@@ -459,16 +463,26 @@ def main():
             # Attempt to assess quality of the current value
             rating = ''
 
-            jobID        = i[0]
-            reqMem       = i[2]
-            maxRSS       = i[3]
-            reqCPUs      = i[4]
-            userCPU      = i[5]
-            reqGPUs      = i[6]
-            userGPU      = i[7]
-            timeLimit    = i[8]
-            elapsed      = i[9]
-            state        = i[10]
+            if GPU_STATS:
+                jobID        = i[0]
+                reqMem       = i[2]
+                maxRSS       = i[3]
+                reqCPUs      = i[4]
+                userCPU      = i[5]
+                reqGPUs      = i[6]
+                userGPU      = i[7]
+                timeLimit    = i[8]
+                elapsed      = i[9]
+                state        = i[10]
+            else:
+                jobID        = i[0]
+                reqMem       = i[2]
+                maxRSS       = i[3]
+                reqCPUs      = i[4]
+                userCPU      = i[5]
+                timeLimit    = i[6]
+                elapsed      = i[7]
+                state        = i[8]
            
             usageByCore = False
             if 'c' in reqMem:
@@ -595,7 +609,7 @@ def main():
 
                     tLimitStats[0] += elapsed
                     tLimitStats[1] += timeLimit
-            elif valIndex == calcReqGPUS and len(reqGPUs) > 1 and \
+            elif GPU_STATS and valIndex == calcReqGPUS and len(reqGPUs) > 1 and \
                  '-' not in [elapsed]:
                 timeLimit = timeStringToSeconds(timeLimit)
                 gpuinfo = json.loads(userGPU)
@@ -614,7 +628,7 @@ def main():
                         rating = Colors.YELLOW
                     else:
                         rating = Colors.GREEN                
-            elif valIndex == calcUserGPU and len(userGPU) > 1 and \
+            elif GPU_STATS and valIndex == calcUserGPU and len(userGPU) > 1 and \
                  '-' not in [elapsed]:
                 timeLimit = timeStringToSeconds(timeLimit)
                 gpuinfo = json.loads(userGPU)
@@ -662,9 +676,9 @@ def main():
                         valInGigs = float(valString) / (pow(2,10))
                         valString = str("{0:0.2f}".format(valInGigs))
                         valString = valString[:4] + 'G'
-                elif valIndex == calcReqGPUS and valString != '-':
+                elif GPU_STATS and valIndex == calcReqGPUS and valString != '-':
                     valString = str(gpuinfo['ngpu'])
-                elif valIndex == calcUserGPU and valString != '-':
+                elif GPU_STATS and valIndex == calcUserGPU and valString != '-':
                     gpuinfo = json.loads(valString)
                     valString = str(gpuinfo['gpu_util'] * gpuinfo['step'] * \
                                     gpuinfo['ngpu'] / (60.0 * 100.0))
