@@ -51,3 +51,4 @@ All config values for `jobstats` are accessed from `jobstats-config.ini`. These 
 * `SHOW_JOB_CHILDREN`: Show each job along with the child jobs from each `srun` command in the batch script. Leaving this off will give you the sum total for each resource for the overall job.
 * `COLUMN_MAX`: Max width of the presented table. Setting to `auto` will set the max width to the terminal size on call.
 * `GRADE_INCREMENT_*`: Grade scale from red, to yellow, to green for each value.
+* `TRACK_SINGLE_CORE_JOBS`: Include single core jobs when calculating CPU efficiency
