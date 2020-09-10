@@ -3,6 +3,23 @@
 ## Overview 
 Provides a toolkit of scripts to easily view and pipe data on a user or account's resource usage data from Slurm's `sacct` tool.
 
+## Usage
+```
+Usage:  jobstats  [OPTION]...
+Show usage statistics for past slurm jobs
+
+  -A                   run jobstats on an entire account
+  -S                   show jobs since start date (format m/d/yy)
+  -r, --show-running   show running jobs
+  -p, --parsable       make output parseable
+  -c, --no-color       do not print colored stats
+  -s, --no-size-limit  ignore dynamic terminal size limits
+  -G, --gpu-stats      show gpu hours and gpu efficiency
+  All other arguments in 'sacct' are accepted
+
+Got bugs? Report to hpcsupport@nau.edu
+```
+
 ## Installation
 
 ### Requirements
@@ -34,3 +51,4 @@ All config values for `jobstats` are accessed from `jobstats-config.ini`. These 
 * `SHOW_JOB_CHILDREN`: Show each job along with the child jobs from each `srun` command in the batch script. Leaving this off will give you the sum total for each resource for the overall job.
 * `COLUMN_MAX`: Max width of the presented table. Setting to `auto` will set the max width to the terminal size on call.
 * `GRADE_INCREMENT_*`: Grade scale from red, to yellow, to green for each value.
+* `TRACK_SINGLE_CORE_JOBS`: Include single core jobs when calculating CPU efficiency
