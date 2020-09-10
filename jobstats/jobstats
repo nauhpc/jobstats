@@ -76,10 +76,13 @@ def getJobStats(extraArgs=None, gpu_stats=False):
 
     # --units=G : Get values in Gigabytes
     # -P        : Make output parseable
-    out = subprocess.getstatusoutput(cmd)
+    return_code, out = subprocess.getstatusoutput(cmd)
 
     # Get return of jobstats command.
-    out = out[1].split('\n')
+    out = out.split('\n')
+
+    if return_code != 0:
+        return [out], {}
 
     jobs = []
     count = 0
