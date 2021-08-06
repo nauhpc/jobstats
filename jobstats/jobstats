@@ -327,8 +327,9 @@ def main():
     maxLen = [0 for i in range(len(jobs[0]))]
     for i in jobs:
         for index, jobString in enumerate(i):
-            if len(jobString) > maxLen[index] and '.b' not in jobString \
-                                              and ' ' not in jobString:
+            if len(jobString) > maxLen[index] and \
+               not (index == 0 and '.' in jobString) and \
+               ' ' not in jobString:
                 maxLen[index] = len(jobString)
 
     # Force the MaxLen column to fit max 7 characters instead of 6
