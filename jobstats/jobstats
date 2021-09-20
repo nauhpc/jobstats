@@ -192,37 +192,51 @@ def timeStringToSeconds(timeString):
       
 
 def main():
-    # Read in config args
-    config = configparser.ConfigParser()
-
     # Attempt to read from the local directory
-    configFilePath = (os.path.dirname(__file__) + str('/jobstats-config.ini'))
+    configFilePath = os.path.dirname(__file__) + str('/jobstats-config.ini')
 
-    config.read(configFilePath)
-    
-    # If config file is not in local directory, check resource directory
-    if not 'DEFAULTS' in config:
-        config.read_string(pkg_resources.resource_string('jobstats', 'jobstats-config.ini').decode('utf-8'))
-    
-    MEM_HARD_CAP       = config['DEFAULTS']['MEM_HARD_CAP'] == 'True'
-    SHOW_JOB_CHILDREN  = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True'
-    MEMORY_WEIGHT      = int(config['DEFAULTS']['MEMORY_WEIGHT'])
-    CPU_WEIGHT         = int(config['DEFAULTS']['CPU_WEIGHT'])
-    COLUMN_MAX         = config['DEFAULTS']['COLUMN_MAX']
-    TRACK_SINGLE_CORE_JOBS = config['DEFAULTS']['TRACK_SINGLE_CORE_JOBS'] == 'True'
-    
-    GRADE_SCALE_TLIMIT = [float(x) for x in config['DEFAULTS']
-                         ['GRADE_INCREMENT_TLIMIT'].split(',')]
-    
-    GRADE_SCALE_MEMORY = [float(x) for x in config['DEFAULTS']
-                         ['GRADE_INCREMENT_RAM'].split(',')]
-    
-    GRADE_SCALE_CPU    = [float(x) for x in config['DEFAULTS']
-                         ['GRADE_INCREMENT_CPU'].split(',')]
+    # set config vars to default values
+    MEM_HARD_CAP           = True
+    SHOW_JOB_CHILDREN      = False
+    MEMORY_WEIGHT          = 1
+    CPU_WEIGHT             = 1
+    COLUMN_MAX             = "auto"
+    TRACK_SINGLE_CORE_JOBS = False
+    GRADE_SCALE_TLIMIT     = [0.33, 0.66, 1.0]
+    GRADE_SCALE_MEMORY     = [0.33, 0.66, 1.0]
+    GRADE_SCALE_CPU        = [0.33, 0.66, 1.0]
+    GRADE_SCALE_GPU        = [0.33, 0.66, 1.0]
 
-    GRADE_SCALE_GPU    = [float(x) for x in config['DEFAULTS']
-                          ['GRADE_INCREMENT_GPU'].split(',')]
+    if os.path.exists(configFilePath):
     
+        # Read in config args
+        config = configparser.ConfigParser()
+
+        config.read(configFilePath)
+
+        # If config file is not in local directory, check resource directory
+        if not 'DEFAULTS' in config:
+            config.read_string(pkg_resources.resource_string('jobstats', 'jobstats-config.ini').decode('utf-8'))
+
+        MEM_HARD_CAP           = config['DEFAULTS']['MEM_HARD_CAP'] == 'True'
+        SHOW_JOB_CHILDREN      = config['DEFAULTS']['SHOW_JOB_CHILDREN'] == 'True'
+        MEMORY_WEIGHT          = int(config['DEFAULTS']['MEMORY_WEIGHT'])
+        CPU_WEIGHT             = int(config['DEFAULTS']['CPU_WEIGHT'])
+        COLUMN_MAX             = config['DEFAULTS']['COLUMN_MAX']
+        TRACK_SINGLE_CORE_JOBS = config['DEFAULTS']['TRACK_SINGLE_CORE_JOBS'] == 'True'
+
+        GRADE_SCALE_TLIMIT = [float(x) for x in config['DEFAULTS']
+                             ['GRADE_INCREMENT_TLIMIT'].split(',')]
+
+        GRADE_SCALE_MEMORY = [float(x) for x in config['DEFAULTS']
+                             ['GRADE_INCREMENT_RAM'].split(',')]
+
+        GRADE_SCALE_CPU    = [float(x) for x in config['DEFAULTS']
+                             ['GRADE_INCREMENT_CPU'].split(',')]
+
+        GRADE_SCALE_GPU    = [float(x) for x in config['DEFAULTS']
+                              ['GRADE_INCREMENT_GPU'].split(',')]
+
     # Args controlled by flags
     OVERRIDE_COLUMN_SIZE = False
     IGNORE_COLUMN_SIZE   = False
