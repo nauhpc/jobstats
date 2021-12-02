@@ -82,7 +82,7 @@ def getJobStats(extraArgs=None, gpu_stats=False):
     out = out.split('\n')
 
     if return_code != 0:
-        return [out], {}
+        return return_code, [out], {}
 
     jobs = []
     count = 0
@@ -110,7 +110,7 @@ def getJobStats(extraArgs=None, gpu_stats=False):
         if not gpu_stats:
             out[i] = out[i][0:6] + out[i][8:]
         jobs.append(out[i])
-    return jobs, gpuinfo
+    return return_code, jobs, gpuinfo
 
 
 def getRunningJobStats(jobID):
@@ -245,7 +245,15 @@ def main():
     NO_COLOR             = False
     GPU_STATS            = False
 
+    err = False # set to True if an error occurs
+
     # Process flags and args
+    if len(sys.argv) >= 2:
+        if re.fullmatch(r'[0-9,.A-Za-z]+', sys.argv[1]) != None:
+            # if sys.argv[1] is a comma-separated list of ints
+            # we prepend the -j flag, for jobids
+            sys.argv = sys.argv[0:1] + ['-j'] + sys.argv[1:]
+    
     if '--col-size' in sys.argv:
         OVERRIDE_COLUMN_SIZE = True
         try:
@@ -310,20 +318,20 @@ def main():
     if '-h' in sys.argv or '--help' in sys.argv:
         HELP_FLAG = True
     else:
-        jobs, gpuinfo = getJobStats(extraArgs=' '.join(sys.argv[1::]), gpu_stats=GPU_STATS)
+        return_code, jobs, gpuinfo = getJobStats(extraArgs=' '.join(sys.argv[1::]), gpu_stats=GPU_STATS)
         err = False
-        # Make sure the sacct call didn't throw an error
-        if jobs[0][0] == '-' or len(jobs[0]) == 1:
+        if return_code != 0:
             if PARSEABLE:
-                exit()
-            print("Sacct error: ", jobs[0][0])
+                exit(1)
+            print("\n".join(jobs[0]))
             err = True
 
     # Print help message
     if HELP_FLAG or err:
-        print('Usage: ', sys.argv[0].split('/')[-1], ' [OPTION]...')
+        print('Usage: ', sys.argv[0].split('/')[-1], '[JOBID] [OPTIONS...]')
         print('Show usage statistics for past slurm jobs')
-        print('\n  -A                   run jobstats on an entire account')
+        print('\n  JOBID                a comma-separated list of jobids')
+        print('  -A                   run jobstats on an entire account')
         print('  -S                   show jobs since start date (format m/d/yy)')
         print('  -r, --show-running   show running jobs')
         print('  -p, --parsable       make output parseable')
@@ -332,7 +340,10 @@ def main():
         print('  -G, --gpu-stats      show gpu hours and gpu efficiency')
         print('  All other arguments in \'sacct\' are accepted')
         print('\nGot bugs? Report to hpcsupport@nau.edu')
-        exit()
+        if err == True:
+            exit(1)
+        else:
+            exit()
 
     # Add in label value for single job efficiency
     jobs[0].append('JobEff')
@@ -422,7 +433,6 @@ def main():
             elif '.' in jobs[index+1][0]:
                 i[3] = jobs[index+1][3]
 
-        
         # In the case that we hit the last row, just keep going, it can't 
         # be a batch job
         except IndexError:
@@ -791,7 +801,8 @@ def main():
     
     else:
         gradeGPU = round(gpuStats[0] / gpuStats[1] * 100, 2)
-        grades.append(gradeGPU)
+        if GPU_STATS == True:
+            grades.append(gradeGPU)
         gradeGPU = str("%.2f" % gradeGPU).zfill(5) + '%'
  
     if tLimitStats[1] == 0:
@@ -826,7 +837,8 @@ def main():
         
         print(statsMemLine)
         print(statsCPULine)
-        print(statsGPULine)
+        if GPU_STATS == True:
+            print(statsGPULine)
         print(statsTLimitLine)
         
         score = 'Efficiency Score: '
