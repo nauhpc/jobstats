@@ -5,7 +5,7 @@ Provides a toolkit of scripts to easily view and pipe data on a user or account'
 
 ## Usage
 ```
-Usage:  jobstats-updated [JOBID] [OPTIONS...]
+Usage:  jobstats [JOBID] [OPTIONS...]
 Show usage statistics for past slurm jobs
 
   JOBID                a comma-separated list of jobids
