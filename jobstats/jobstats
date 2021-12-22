@@ -575,7 +575,6 @@ def main():
                 # Is memory usage by core?
                 try:
                     maxRSS = float(maxRSS)
-
                 except:
                     maxRSS = 0
 
@@ -778,40 +777,35 @@ def main():
 
     # Print job stats grades
     grades = []
-    # showTips = [False, False, False]
 
-    if memoryStats[1] == 0:
-        gradeMemory = '-'
-    
-    else:
+    if memoryStats[1] != 0:
         gradeMemory = round(memoryStats[0] / memoryStats[1] * 100, 2)
-        grades.append(gradeMemory)
-        gradeMemory = str("%.2f" % gradeMemory).zfill(5) + '%'
-
-    if cpuStats[1] == 0:
-        gradeCPU = '-'
-    
     else:
+        gradeMemory = 100.0
+    grades.append(gradeMemory)
+    gradeMemory = str("%.2f" % gradeMemory).zfill(5) + '%'
+
+    if cpuStats[1] != 0:
         gradeCPU = round(cpuStats[0] / cpuStats[1] * 100, 2)
-        grades.append(gradeCPU)
-        gradeCPU = str("%.2f" % gradeCPU).zfill(5) + '%'
+    else:
+        gradeCPU = 100.0
+    grades.append(gradeCPU)
+    gradeCPU = str("%.2f" % gradeCPU).zfill(5) + '%'
 
-    if gpuStats[1] == 0:
-        gradeGPU = '-'
-    
-    else:
+    if gpuStats[1] != 0:
         gradeGPU = round(gpuStats[0] / gpuStats[1] * 100, 2)
-        if GPU_STATS == True:
-            grades.append(gradeGPU)
-        gradeGPU = str("%.2f" % gradeGPU).zfill(5) + '%'
- 
-    if tLimitStats[1] == 0:
-        gradeTLimit = '-'
-    
     else:
+        gradeGPU = 100.0
+    if GPU_STATS == True:
+        grades.append(gradeGPU)
+    gradeGPU = str("%.2f" % gradeGPU).zfill(5) + '%'
+ 
+    if tLimitStats[1] != 0:
         gradeTLimit = round(tLimitStats[0] / tLimitStats[1] * 100, 2)
-        grades.append(gradeTLimit)
-        gradeTLimit = str("%.2f" % gradeTLimit).zfill(5) + '%'
+    else:
+        gradeTLimit = 100.0
+    grades.append(gradeTLimit)
+    gradeTLimit = str("%.2f" % gradeTLimit).zfill(5) + '%'
 
 
     if PARSEABLE:
