@@ -5,9 +5,10 @@ Provides a toolkit of scripts to easily view and pipe data on a user or account'
 
 ## Usage
 ```
-Usage:  jobstats  [OPTION]...
+Usage:  jobstats [JOBID] [OPTIONS...]
 Show usage statistics for past slurm jobs
 
+  JOBID                a comma-separated list of jobids
   -A                   run jobstats on an entire account
   -S                   show jobs since start date (format m/d/yy)
   -r, --show-running   show running jobs
